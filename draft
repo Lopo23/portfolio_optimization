@@ -1,0 +1,871 @@
+"""
+Markus Rzenkowski Investment Thesis Toolkit
+==========================================
+
+Tailored for a CFA/IPS-style portfolio project with:
+- client-suitability-first logic
+- target allocations + policy ranges
+- meaningful fixed-income structure
+- defined-maturity bond ETF ladder
+- very small private credit sleeve
+- optional crypto sleeve
+- KPI and performance measurement including:
+    * Sharpe Ratio
+    * Treynor Ratio
+    * Jensen's Alpha
+- scenario analysis
+- rebalance plan
+- security-selection discipline placeholders
+
+Important
+---------
+This is a thesis support tool, not live portfolio software.
+All capital market assumptions are editable inputs, not facts.
+The 2028 AI scenario is treated only as a stress scenario.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+import math
+import random
+import statistics
+
+
+# =============================================================================
+# 1. CASE DATA
+# =============================================================================
+
+CURRENT_HOLDINGS_EUR: Dict[str, float] = {
+    "Mercedes-Benz Group AG": 11_500_000,
+    "BMW AG": 8_400_000,
+    "iShares Core DAX UCITS ETF": 9_800_000,
+    "iShares Core S&P 500 UCITS ETF": 6_600_000,
+    "iShares Core MSCI World UCITS ETF": 3_500_000,
+    "High Yield Corp Bond UCITS ETF": 4_900_000,
+    "German Bund Zero 2036": 2_800_000,
+    "iShares EUR Inflation Linked Govt Bond UCITS ETF": 2_900_000,
+}
+
+CURRENT_SECURITY_TO_SLEEVE: Dict[str, str] = {
+    "Mercedes-Benz Group AG": "Global Equities",
+    "BMW AG": "Global Equities",
+    "iShares Core DAX UCITS ETF": "Global Equities",
+    "iShares Core S&P 500 UCITS ETF": "Global Equities",
+    "iShares Core MSCI World UCITS ETF": "Global Equities",
+    "High Yield Corp Bond UCITS ETF": "Investment-Grade / Credit Bonds",
+    "German Bund Zero 2036": "Government Bonds",
+    "iShares EUR Inflation Linked Govt Bond UCITS ETF": "Inflation-Linked Bonds",
+}
+
+CURRENT_SECURITY_META = {
+    "Mercedes-Benz Group AG": {"country": "Germany", "sector": "Automobiles"},
+    "BMW AG": {"country": "Germany", "sector": "Automobiles"},
+    "iShares Core DAX UCITS ETF": {"country": "Germany", "sector": "Multi-sector"},
+    "iShares Core S&P 500 UCITS ETF": {"country": "United States", "sector": "Multi-sector"},
+    "iShares Core MSCI World UCITS ETF": {"country": "Global", "sector": "Multi-sector"},
+    "High Yield Corp Bond UCITS ETF": {"country": "Global", "sector": "Credit"},
+    "German Bund Zero 2036": {"country": "Germany", "sector": "Government"},
+    "iShares EUR Inflation Linked Govt Bond UCITS ETF": {"country": "Euro Area", "sector": "Government"},
+}
+
+
+# =============================================================================
+# 2. THESIS ALLOCATION
+# =============================================================================
+
+@dataclass(frozen=True)
+class SleevePolicy:
+    target: float
+    min_w: float
+    max_w: float
+
+
+THESIS_POLICY: Dict[str, SleevePolicy] = {
+    "Global Equities": SleevePolicy(target=0.40, min_w=0.30, max_w=0.55),
+    "Government Bonds": SleevePolicy(target=0.12, min_w=0.05, max_w=0.20),
+    "Investment-Grade / Credit Bonds": SleevePolicy(target=0.12, min_w=0.05, max_w=0.20),
+    "Inflation-Linked Bonds": SleevePolicy(target=0.10, min_w=0.05, max_w=0.15),
+    "Defined-Maturity Bond Ladder": SleevePolicy(target=0.08, min_w=0.04, max_w=0.12),
+    "Cash / Money Market": SleevePolicy(target=0.10, min_w=0.05, max_w=0.25),
+    "Gold / Defensive Diversifiers": SleevePolicy(target=0.06, min_w=0.00, max_w=0.10),
+    "Private Credit": SleevePolicy(target=0.02, min_w=0.00, max_w=0.04),
+    "Crypto": SleevePolicy(target=0.00, min_w=0.00, max_w=0.02),
+}
+
+# Corrected so the ladder sums exactly to 8%
+BOND_LADDER_TARGETS: Dict[str, float] = {
+    "Ladder 2027": 0.030,
+    "Ladder 2028": 0.025,
+    "Ladder 2029": 0.025,
+}
+
+ladder_sum = sum(BOND_LADDER_TARGETS.values())
+ladder_target = THESIS_POLICY["Defined-Maturity Bond Ladder"].target
+if abs(ladder_sum - ladder_target) >= 1e-9:
+    raise ValueError(
+        f"Bond ladder weights sum to {ladder_sum:.2%}, "
+        f"but target is {ladder_target:.2%}."
+    )
+
+
+# =============================================================================
+# 3. KPI LIMITS
+# =============================================================================
+
+KPI_LIMITS = {
+    "volatility_max": 0.09,
+    "sharpe_min": 0.40,
+    "liquidity_floor": 0.10,
+    "five_day_liquidity_floor": 0.15,
+    "crypto_cap": 0.02,
+    "private_credit_cap": 0.04,
+    "single_issuer_cap": 0.03,
+    "single_sector_cap": 0.20,
+    "single_country_cap": 0.25,
+    "max_drawdown_soft_limit": 0.15,
+}
+
+
+# =============================================================================
+# 4. CAPITAL MARKET ASSUMPTIONS
+# =============================================================================
+
+BASE_ASSUMPTIONS = {
+    "Global Equities": {"mu": 0.070, "sigma": 0.150},
+    "Government Bonds": {"mu": 0.030, "sigma": 0.050},
+    "Investment-Grade / Credit Bonds": {"mu": 0.040, "sigma": 0.070},
+    "Inflation-Linked Bonds": {"mu": 0.035, "sigma": 0.060},
+    "Defined-Maturity Bond Ladder": {"mu": 0.040, "sigma": 0.045},
+    "Cash / Money Market": {"mu": 0.025, "sigma": 0.010},
+    "Gold / Defensive Diversifiers": {"mu": 0.040, "sigma": 0.120},
+    "Private Credit": {"mu": 0.070, "sigma": 0.080},
+    "Crypto": {"mu": 0.100, "sigma": 0.600},
+}
+
+RISK_FREE_RATE = 0.02
+POLICY_BENCHMARK_RETURN = 0.055
+
+ASSET_BETAS = {
+    "Global Equities": 1.00,
+    "Government Bonds": 0.10,
+    "Investment-Grade / Credit Bonds": 0.25,
+    "Inflation-Linked Bonds": 0.15,
+    "Defined-Maturity Bond Ladder": 0.10,
+    "Cash / Money Market": 0.00,
+    "Gold / Defensive Diversifiers": 0.05,
+    "Private Credit": 0.35,
+    "Crypto": 1.20,
+}
+
+CORRELATIONS = {
+    ("Global Equities", "Global Equities"): 1.00,
+    ("Global Equities", "Government Bonds"): -0.15,
+    ("Global Equities", "Investment-Grade / Credit Bonds"): 0.20,
+    ("Global Equities", "Inflation-Linked Bonds"): 0.05,
+    ("Global Equities", "Defined-Maturity Bond Ladder"): 0.00,
+    ("Global Equities", "Cash / Money Market"): 0.00,
+    ("Global Equities", "Gold / Defensive Diversifiers"): 0.10,
+    ("Global Equities", "Private Credit"): 0.35,
+    ("Global Equities", "Crypto"): 0.20,
+
+    ("Government Bonds", "Government Bonds"): 1.00,
+    ("Government Bonds", "Investment-Grade / Credit Bonds"): 0.35,
+    ("Government Bonds", "Inflation-Linked Bonds"): 0.50,
+    ("Government Bonds", "Defined-Maturity Bond Ladder"): 0.45,
+    ("Government Bonds", "Cash / Money Market"): 0.20,
+    ("Government Bonds", "Gold / Defensive Diversifiers"): 0.00,
+    ("Government Bonds", "Private Credit"): 0.10,
+    ("Government Bonds", "Crypto"): 0.00,
+
+    ("Investment-Grade / Credit Bonds", "Investment-Grade / Credit Bonds"): 1.00,
+    ("Investment-Grade / Credit Bonds", "Inflation-Linked Bonds"): 0.30,
+    ("Investment-Grade / Credit Bonds", "Defined-Maturity Bond Ladder"): 0.55,
+    ("Investment-Grade / Credit Bonds", "Cash / Money Market"): 0.15,
+    ("Investment-Grade / Credit Bonds", "Gold / Defensive Diversifiers"): 0.05,
+    ("Investment-Grade / Credit Bonds", "Private Credit"): 0.40,
+    ("Investment-Grade / Credit Bonds", "Crypto"): 0.05,
+
+    ("Inflation-Linked Bonds", "Inflation-Linked Bonds"): 1.00,
+    ("Inflation-Linked Bonds", "Defined-Maturity Bond Ladder"): 0.35,
+    ("Inflation-Linked Bonds", "Cash / Money Market"): 0.10,
+    ("Inflation-Linked Bonds", "Gold / Defensive Diversifiers"): 0.10,
+    ("Inflation-Linked Bonds", "Private Credit"): 0.10,
+    ("Inflation-Linked Bonds", "Crypto"): 0.00,
+
+    ("Defined-Maturity Bond Ladder", "Defined-Maturity Bond Ladder"): 1.00,
+    ("Defined-Maturity Bond Ladder", "Cash / Money Market"): 0.20,
+    ("Defined-Maturity Bond Ladder", "Gold / Defensive Diversifiers"): 0.00,
+    ("Defined-Maturity Bond Ladder", "Private Credit"): 0.25,
+    ("Defined-Maturity Bond Ladder", "Crypto"): 0.00,
+
+    ("Cash / Money Market", "Cash / Money Market"): 1.00,
+    ("Cash / Money Market", "Gold / Defensive Diversifiers"): 0.00,
+    ("Cash / Money Market", "Private Credit"): 0.00,
+    ("Cash / Money Market", "Crypto"): 0.00,
+
+    ("Gold / Defensive Diversifiers", "Gold / Defensive Diversifiers"): 1.00,
+    ("Gold / Defensive Diversifiers", "Private Credit"): 0.00,
+    ("Gold / Defensive Diversifiers", "Crypto"): 0.05,
+
+    ("Private Credit", "Private Credit"): 1.00,
+    ("Private Credit", "Crypto"): 0.00,
+
+    ("Crypto", "Crypto"): 1.00,
+}
+
+
+# =============================================================================
+# 5. SCENARIOS
+# =============================================================================
+
+SCENARIOS = {
+    "Base Case": {
+        "Global Equities": 0.00,
+        "Government Bonds": 0.00,
+        "Investment-Grade / Credit Bonds": 0.00,
+        "Inflation-Linked Bonds": 0.00,
+        "Defined-Maturity Bond Ladder": 0.00,
+        "Cash / Money Market": 0.00,
+        "Gold / Defensive Diversifiers": 0.00,
+        "Private Credit": 0.00,
+        "Crypto": 0.00,
+    },
+    "Recession / Risk-Off": {
+        "Global Equities": -0.15,
+        "Government Bonds": +0.02,
+        "Investment-Grade / Credit Bonds": -0.03,
+        "Inflation-Linked Bonds": -0.02,
+        "Defined-Maturity Bond Ladder": -0.01,
+        "Cash / Money Market": +0.00,
+        "Gold / Defensive Diversifiers": +0.05,
+        "Private Credit": -0.08,
+        "Crypto": -0.35,
+    },
+    "Sticky Inflation": {
+        "Global Equities": -0.05,
+        "Government Bonds": -0.06,
+        "Investment-Grade / Credit Bonds": -0.04,
+        "Inflation-Linked Bonds": +0.01,
+        "Defined-Maturity Bond Ladder": -0.02,
+        "Cash / Money Market": +0.01,
+        "Gold / Defensive Diversifiers": +0.06,
+        "Private Credit": -0.03,
+        "Crypto": -0.15,
+    },
+    "2028 AI Disruption Stress": {
+        "Global Equities": -0.18,
+        "Government Bonds": +0.03,
+        "Investment-Grade / Credit Bonds": -0.05,
+        "Inflation-Linked Bonds": -0.01,
+        "Defined-Maturity Bond Ladder": -0.02,
+        "Cash / Money Market": +0.00,
+        "Gold / Defensive Diversifiers": +0.07,
+        "Private Credit": -0.10,
+        "Crypto": -0.30,
+    },
+    "Strong Risk-On": {
+        "Global Equities": +0.14,
+        "Government Bonds": -0.03,
+        "Investment-Grade / Credit Bonds": +0.02,
+        "Inflation-Linked Bonds": +0.01,
+        "Defined-Maturity Bond Ladder": +0.01,
+        "Cash / Money Market": +0.00,
+        "Gold / Defensive Diversifiers": -0.02,
+        "Private Credit": +0.06,
+        "Crypto": +0.35,
+    },
+}
+
+
+# =============================================================================
+# 6. HELPERS
+# =============================================================================
+
+def eur(x: float) -> str:
+    return f"EUR {x:,.0f}"
+
+
+def pct(x: float) -> str:
+    return f"{x:.2%}"
+
+
+def get_corr(a: str, b: str) -> float:
+    if (a, b) in CORRELATIONS:
+        return CORRELATIONS[(a, b)]
+    if (b, a) in CORRELATIONS:
+        return CORRELATIONS[(b, a)]
+    if a == b:
+        return 1.0
+    raise KeyError(f"Missing correlation pair: ({a}, {b})")
+
+
+def total_value(values: Dict[str, float]) -> float:
+    return sum(values.values())
+
+
+def normalize_weights(values: Dict[str, float]) -> Dict[str, float]:
+    tv = total_value(values)
+    if tv == 0:
+        return {k: 0.0 for k in values}
+    return {k: v / tv for k, v in values.items()}
+
+
+def aggregate_current_by_sleeve(
+    holdings: Dict[str, float],
+    mapping: Dict[str, str],
+) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    for security, value in holdings.items():
+        sleeve = mapping[security]
+        out[sleeve] = out.get(sleeve, 0.0) + value
+    return out
+
+
+def full_current_sleeve_weights() -> Dict[str, float]:
+    sleeve_values = aggregate_current_by_sleeve(CURRENT_HOLDINGS_EUR, CURRENT_SECURITY_TO_SLEEVE)
+    weights = normalize_weights(sleeve_values)
+    return {sleeve: weights.get(sleeve, 0.0) for sleeve in THESIS_POLICY}
+
+
+def target_weights() -> Dict[str, float]:
+    return {k: v.target for k, v in THESIS_POLICY.items()}
+
+
+def range_check(weights: Dict[str, float]) -> Dict[str, str]:
+    out = {}
+    for sleeve, policy in THESIS_POLICY.items():
+        w = weights.get(sleeve, 0.0)
+        if w < policy.min_w:
+            out[sleeve] = f"Below minimum by {pct(policy.min_w - w)}"
+        elif w > policy.max_w:
+            out[sleeve] = f"Above maximum by {pct(w - policy.max_w)}"
+        else:
+            out[sleeve] = "Within range"
+    return out
+
+
+def rebalance_amounts(
+    portfolio_value: float,
+    current_weights: Dict[str, float],
+    target_w: Dict[str, float],
+) -> Dict[str, float]:
+    out = {}
+    for sleeve, tgt in target_w.items():
+        cur = current_weights.get(sleeve, 0.0)
+        out[sleeve] = (tgt - cur) * portfolio_value
+    return out
+
+
+# =============================================================================
+# 7. PERFORMANCE METRICS
+# =============================================================================
+
+def portfolio_expected_return(weights: Dict[str, float], assumptions: Dict[str, Dict[str, float]]) -> float:
+    return sum(weights.get(sleeve, 0.0) * assumptions[sleeve]["mu"] for sleeve in assumptions)
+
+
+def portfolio_volatility(weights: Dict[str, float], assumptions: Dict[str, Dict[str, float]]) -> float:
+    sleeves = list(assumptions.keys())
+    var = 0.0
+    for i in sleeves:
+        for j in sleeves:
+            wi = weights.get(i, 0.0)
+            wj = weights.get(j, 0.0)
+            si = assumptions[i]["sigma"]
+            sj = assumptions[j]["sigma"]
+            c = get_corr(i, j)
+            var += wi * wj * si * sj * c
+    return math.sqrt(max(var, 0.0))
+
+
+def portfolio_beta(
+    portfolio_weights: Dict[str, float],
+    asset_betas: Dict[str, float],
+) -> float:
+    return sum(portfolio_weights.get(asset, 0.0) * asset_betas.get(asset, 0.0) for asset in portfolio_weights)
+
+
+def sharpe_ratio_from_inputs(
+    portfolio_return: float,
+    risk_free_rate: float,
+    portfolio_volatility_value: float,
+) -> float:
+    if portfolio_volatility_value == 0:
+        return float("nan")
+    return (portfolio_return - risk_free_rate) / portfolio_volatility_value
+
+
+def treynor_ratio(
+    portfolio_return: float,
+    risk_free_rate: float,
+    portfolio_beta_value: float,
+) -> float:
+    if portfolio_beta_value == 0:
+        return float("nan")
+    return (portfolio_return - risk_free_rate) / portfolio_beta_value
+
+
+def jensens_alpha(
+    portfolio_return: float,
+    risk_free_rate: float,
+    market_return: float,
+    portfolio_beta_value: float,
+) -> float:
+    expected_capm_return = risk_free_rate + portfolio_beta_value * (market_return - risk_free_rate)
+    return portfolio_return - expected_capm_return
+
+
+def scenario_return(weights: Dict[str, float], scenario_shocks: Dict[str, float]) -> float:
+    return sum(weights.get(sleeve, 0.0) * shock for sleeve, shock in scenario_shocks.items())
+
+
+# =============================================================================
+# 8. MONTE CARLO
+# =============================================================================
+
+def random_normal(mu: float, sigma: float) -> float:
+    u1 = max(random.random(), 1e-12)
+    u2 = random.random()
+    z = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+    return mu + sigma * z
+
+
+def monte_carlo_projection(
+    start_value: float,
+    weights: Dict[str, float],
+    assumptions: Dict[str, Dict[str, float]],
+    years: int = 5,
+    n_sims: int = 5000,
+    annual_withdrawal_rate: float = 0.0,
+) -> Dict[str, float]:
+    endings = []
+    drawdowns = []
+
+    for _ in range(n_sims):
+        v = start_value
+        peak = start_value
+        max_dd = 0.0
+
+        for _ in range(years):
+            annual_return = 0.0
+            for sleeve, w in weights.items():
+                if w == 0:
+                    continue
+                mu = assumptions[sleeve]["mu"]
+                sigma = assumptions[sleeve]["sigma"]
+                r = random_normal(mu, sigma)
+                annual_return += w * r
+
+            v *= (1.0 + annual_return)
+            v *= (1.0 - annual_withdrawal_rate)
+
+            if v > peak:
+                peak = v
+            dd = (peak - v) / peak if peak > 0 else 0.0
+            if dd > max_dd:
+                max_dd = dd
+
+        endings.append(v)
+        drawdowns.append(max_dd)
+
+    endings.sort()
+    drawdowns.sort()
+
+    return {
+        "mean": statistics.mean(endings),
+        "median": statistics.median(endings),
+        "p10": endings[int(0.10 * len(endings))],
+        "p90": endings[int(0.90 * len(endings))],
+        "loss_probability": sum(x < start_value for x in endings) / len(endings),
+        "mean_max_drawdown": statistics.mean(drawdowns),
+        "p90_max_drawdown": drawdowns[int(0.90 * len(drawdowns))],
+    }
+
+
+# =============================================================================
+# 9. CURRENT PORTFOLIO DIAGNOSTICS
+# =============================================================================
+
+def current_single_issuer_weights() -> Dict[str, float]:
+    return normalize_weights(CURRENT_HOLDINGS_EUR)
+
+
+def current_country_exposure() -> Dict[str, float]:
+    total = total_value(CURRENT_HOLDINGS_EUR)
+    out: Dict[str, float] = {}
+    for sec, value in CURRENT_HOLDINGS_EUR.items():
+        c = CURRENT_SECURITY_META[sec]["country"]
+        out[c] = out.get(c, 0.0) + value / total
+    return out
+
+
+def current_sector_exposure() -> Dict[str, float]:
+    total = total_value(CURRENT_HOLDINGS_EUR)
+    out: Dict[str, float] = {}
+    for sec, value in CURRENT_HOLDINGS_EUR.items():
+        s = CURRENT_SECURITY_META[sec]["sector"]
+        out[s] = out.get(s, 0.0) + value / total
+    return out
+
+
+def concentration_flags() -> Dict[str, List[str]]:
+    issuer_flags = []
+    for sec, w in current_single_issuer_weights().items():
+        if w > KPI_LIMITS["single_issuer_cap"]:
+            issuer_flags.append(f"{sec}: {pct(w)} > issuer cap {pct(KPI_LIMITS['single_issuer_cap'])}")
+
+    country_flags = []
+    for country, w in current_country_exposure().items():
+        if w > KPI_LIMITS["single_country_cap"]:
+            country_flags.append(f"{country}: {pct(w)} > country cap {pct(KPI_LIMITS['single_country_cap'])}")
+
+    sector_flags = []
+    for sector, w in current_sector_exposure().items():
+        if w > KPI_LIMITS["single_sector_cap"]:
+            sector_flags.append(f"{sector}: {pct(w)} > sector cap {pct(KPI_LIMITS['single_sector_cap'])}")
+
+    return {
+        "issuer_flags": issuer_flags,
+        "country_flags": country_flags,
+        "sector_flags": sector_flags,
+    }
+
+
+# =============================================================================
+# 10. KPI CHECKS
+# =============================================================================
+
+def thesis_kpi_check(weights: Dict[str, float], assumptions: Dict[str, Dict[str, float]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+
+    exp_return = portfolio_expected_return(weights, assumptions)
+    vol = portfolio_volatility(weights, assumptions)
+    beta_p = portfolio_beta(weights, ASSET_BETAS)
+
+    sr = sharpe_ratio_from_inputs(
+        portfolio_return=exp_return,
+        risk_free_rate=RISK_FREE_RATE,
+        portfolio_volatility_value=vol,
+    )
+
+    tr = treynor_ratio(
+        portfolio_return=exp_return,
+        risk_free_rate=RISK_FREE_RATE,
+        portfolio_beta_value=beta_p,
+    )
+
+    alpha = jensens_alpha(
+        portfolio_return=exp_return,
+        risk_free_rate=RISK_FREE_RATE,
+        market_return=POLICY_BENCHMARK_RETURN,
+        portfolio_beta_value=beta_p,
+    )
+
+    liquidity = weights.get("Cash / Money Market", 0.0)
+    five_day_liquidity_proxy = (
+        weights.get("Cash / Money Market", 0.0)
+        + weights.get("Government Bonds", 0.0)
+        + weights.get("Inflation-Linked Bonds", 0.0)
+    )
+
+    crypto = weights.get("Crypto", 0.0)
+    private_credit = weights.get("Private Credit", 0.0)
+
+    out["Expected Return"] = f"{exp_return:.2%}"
+    out["Volatility"] = f"{vol:.2%}"
+    out["Portfolio Beta"] = f"{beta_p:.2f}"
+    out["Sharpe Ratio"] = f"{sr:.2f}"
+    out["Treynor Ratio"] = f"{tr:.4f}"
+    out["Jensen Alpha"] = f"{alpha:.2%}"
+
+    out["Sharpe KPI"] = "PASS" if sr > KPI_LIMITS["sharpe_min"] else f"FAIL ({sr:.2f} <= {KPI_LIMITS['sharpe_min']:.2f})"
+    out["Treynor KPI"] = "PASS" if tr > 0 else f"FAIL ({tr:.4f} <= 0)"
+    out["Jensen Alpha KPI"] = "PASS" if alpha >= 0 else f"FAIL ({alpha:.2%} < 0)"
+    out["Volatility KPI"] = "PASS" if vol <= KPI_LIMITS["volatility_max"] else f"FAIL ({vol:.2%} > {KPI_LIMITS['volatility_max']:.2%})"
+    out["Liquidity Floor KPI"] = "PASS" if liquidity >= KPI_LIMITS["liquidity_floor"] else f"FAIL ({liquidity:.2%} < {KPI_LIMITS['liquidity_floor']:.2%})"
+    out["5-Day Liquidity KPI"] = "PASS" if five_day_liquidity_proxy >= KPI_LIMITS["five_day_liquidity_floor"] else f"FAIL ({five_day_liquidity_proxy:.2%} < {KPI_LIMITS['five_day_liquidity_floor']:.2%})"
+    out["Crypto Cap KPI"] = "PASS" if crypto <= KPI_LIMITS["crypto_cap"] else f"FAIL ({crypto:.2%} > {KPI_LIMITS['crypto_cap']:.2%})"
+    out["Private Credit Cap KPI"] = "PASS" if private_credit <= KPI_LIMITS["private_credit_cap"] else f"FAIL ({private_credit:.2%} > {KPI_LIMITS['private_credit_cap']:.2%})"
+
+    range_status = range_check(weights)
+    range_pass = all(status == "Within range" for status in range_status.values())
+    out["Policy Range Compliance"] = "PASS" if range_pass else "FAIL"
+
+    return out
+
+
+# =============================================================================
+# 11. SECURITY-SELECTION DISCIPLINE
+# =============================================================================
+
+@dataclass
+class EquityScreen:
+    revenue_cagr_5y: Optional[float] = None
+    eps_cagr_5y: Optional[float] = None
+    roic: Optional[float] = None
+    operating_margin: Optional[float] = None
+    fcf_yield: Optional[float] = None
+    net_debt_to_ebitda: Optional[float] = None
+    interest_coverage: Optional[float] = None
+    forward_pe: Optional[float] = None
+    shares_out_growth_5y: Optional[float] = None
+
+
+def security_screen_comment(screen: EquityScreen) -> List[str]:
+    comments: List[str] = []
+
+    if screen.net_debt_to_ebitda is not None:
+        if screen.net_debt_to_ebitda > 3.5:
+            comments.append("Leverage looks elevated: permanent-loss risk needs scrutiny.")
+        else:
+            comments.append("Leverage appears manageable.")
+
+    if screen.interest_coverage is not None:
+        if screen.interest_coverage < 4:
+            comments.append("Interest coverage is weak; refinancing / solvency risk may be material.")
+        else:
+            comments.append("Interest coverage looks acceptable.")
+
+    if screen.operating_margin is not None:
+        if screen.operating_margin > 0.18:
+            comments.append("High operating margin may require a peak-cycle check.")
+        else:
+            comments.append("Operating margin does not immediately suggest an extreme peak-cycle level.")
+
+    if screen.roic is not None:
+        if screen.roic >= 0.12:
+            comments.append("ROIC suggests decent business quality.")
+        else:
+            comments.append("ROIC is not particularly strong; quality should be validated carefully.")
+
+    if screen.forward_pe is not None:
+        if screen.forward_pe > 25:
+            comments.append("Valuation looks demanding; upside may depend on optimistic assumptions.")
+        else:
+            comments.append("Valuation does not look obviously stretched on forward earnings alone.")
+
+    if screen.fcf_yield is not None:
+        if screen.fcf_yield < 0.03:
+            comments.append("FCF yield looks thin; valuation support may be weak.")
+        else:
+            comments.append("FCF yield offers some valuation support.")
+
+    return comments
+
+
+# =============================================================================
+# 12. REPORTING HELPERS
+# =============================================================================
+
+def print_title(title: str) -> None:
+    print("\n" + "=" * 95)
+    print(title)
+    print("=" * 95)
+
+
+def print_current_portfolio() -> None:
+    print_title("CURRENT PORTFOLIO")
+
+    tv = total_value(CURRENT_HOLDINGS_EUR)
+    print(f"Total value: {eur(tv)}\n")
+
+    weights = current_single_issuer_weights()
+    print("Current holdings:")
+    for sec, value in sorted(CURRENT_HOLDINGS_EUR.items(), key=lambda x: x[1], reverse=True):
+        print(f"  {sec:45s} {eur(value):>15s}   {pct(weights[sec]):>8s}")
+
+    sleeve_values = aggregate_current_by_sleeve(CURRENT_HOLDINGS_EUR, CURRENT_SECURITY_TO_SLEEVE)
+    sleeve_weights = normalize_weights(sleeve_values)
+
+    print("\nCurrent sleeve allocation:")
+    for sleeve in THESIS_POLICY:
+        print(f"  {sleeve:32s} {pct(sleeve_weights.get(sleeve, 0.0)):>8s}")
+
+    print("\nPolicy range check on current portfolio:")
+    current_full = full_current_sleeve_weights()
+    for sleeve, status in range_check(current_full).items():
+        print(f"  {sleeve:32s} {status}")
+
+
+def print_concentration_diagnostics() -> None:
+    print_title("CONCENTRATION DIAGNOSTICS")
+
+    flags = concentration_flags()
+
+    print("Issuer breaches:")
+    if flags["issuer_flags"]:
+        for x in flags["issuer_flags"]:
+            print(f"  - {x}")
+    else:
+        print("  None")
+
+    print("\nCountry breaches:")
+    if flags["country_flags"]:
+        for x in flags["country_flags"]:
+            print(f"  - {x}")
+    else:
+        print("  None")
+
+    print("\nSector breaches:")
+    if flags["sector_flags"]:
+        for x in flags["sector_flags"]:
+            print(f"  - {x}")
+    else:
+        print("  None")
+
+
+def print_target_allocation() -> None:
+    print_title("THESIS TARGET ALLOCATION")
+
+    print(f"{'Sleeve':32s} {'Target':>10s} {'Min':>10s} {'Max':>10s}")
+    for sleeve, pol in THESIS_POLICY.items():
+        print(f"{sleeve:32s} {pct(pol.target):>10s} {pct(pol.min_w):>10s} {pct(pol.max_w):>10s}")
+
+    print("\nDefined-maturity bond ETF ladder:")
+    for rung, w in BOND_LADDER_TARGETS.items():
+        print(f"  {rung:20s} {pct(w)}")
+
+
+def print_rebalance_plan() -> None:
+    print_title("REBALANCE PLAN: CURRENT VS THESIS TARGET")
+
+    tv = total_value(CURRENT_HOLDINGS_EUR)
+    current_w = full_current_sleeve_weights()
+    tgt_w = target_weights()
+    changes = rebalance_amounts(tv, current_w, tgt_w)
+
+    print(f"{'Sleeve':32s} {'Current':>10s} {'Target':>10s} {'Change EUR':>18s}")
+    for sleeve in THESIS_POLICY:
+        print(
+            f"{sleeve:32s} "
+            f"{pct(current_w.get(sleeve, 0.0)):>10s} "
+            f"{pct(tgt_w[sleeve]):>10s} "
+            f"{eur(changes[sleeve]):>18s}"
+        )
+
+    print("\nInterpretation:")
+    print("  Positive EUR change = buy / build allocation")
+    print("  Negative EUR change = sell / reduce allocation")
+
+
+def print_kpi_report() -> None:
+    print_title("THESIS KPI CHECKS")
+
+    tgt_w = target_weights()
+    kpi = thesis_kpi_check(tgt_w, BASE_ASSUMPTIONS)
+
+    print("Risk-adjusted performance metrics:")
+    print(f"  Expected Return:           {kpi['Expected Return']}")
+    print(f"  Volatility:                {kpi['Volatility']}")
+    print(f"  Portfolio Beta:            {kpi['Portfolio Beta']}")
+    print(f"  Sharpe Ratio:              {kpi['Sharpe Ratio']}")
+    print(f"  Treynor Ratio:             {kpi['Treynor Ratio']}")
+    print(f"  Jensen's Alpha:            {kpi['Jensen Alpha']}")
+    print()
+
+    print("KPI status:")
+    skip = {
+        "Expected Return",
+        "Volatility",
+        "Portfolio Beta",
+        "Sharpe Ratio",
+        "Treynor Ratio",
+        "Jensen Alpha",
+    }
+    for key, value in kpi.items():
+        if key in skip:
+            continue
+        print(f"  {key:28s} {value}")
+
+
+def print_scenarios() -> None:
+    print_title("SCENARIO ANALYSIS")
+
+    tgt_w = target_weights()
+    for scenario_name, shocks in SCENARIOS.items():
+        r = scenario_return(tgt_w, shocks)
+        print(f"{scenario_name:28s} {pct(r):>10s}")
+
+    print("\nNote:")
+    print("  '2028 AI Disruption Stress' is a stress scenario only, not a base-case forecast.")
+
+
+def print_monte_carlo() -> None:
+    print_title("5-YEAR MONTE CARLO (ASSUMPTION-BASED)")
+
+    tv = total_value(CURRENT_HOLDINGS_EUR)
+    tgt_w = target_weights()
+
+    result = monte_carlo_projection(
+        start_value=tv,
+        weights=tgt_w,
+        assumptions=BASE_ASSUMPTIONS,
+        years=5,
+        n_sims=3000,
+        annual_withdrawal_rate=0.00,
+    )
+
+    print(f"Start value:                {eur(tv)}")
+    print(f"Mean ending value:          {eur(result['mean'])}")
+    print(f"Median ending value:        {eur(result['median'])}")
+    print(f"10th percentile:            {eur(result['p10'])}")
+    print(f"90th percentile:            {eur(result['p90'])}")
+    print(f"Loss probability:           {pct(result['loss_probability'])}")
+    print(f"Mean max drawdown:          {pct(result['mean_max_drawdown'])}")
+    print(f"90th percentile drawdown:   {pct(result['p90_max_drawdown'])}")
+
+    if result["p90_max_drawdown"] <= KPI_LIMITS["max_drawdown_soft_limit"]:
+        print("Drawdown soft limit check:  PASS")
+    else:
+        print(
+            f"Drawdown soft limit check:  FAIL ({pct(result['p90_max_drawdown'])} > "
+            f"{pct(KPI_LIMITS['max_drawdown_soft_limit'])})"
+        )
+
+
+def print_example_security_screen() -> None:
+    print_title("EXAMPLE: SECURITY-SELECTION DISCIPLINE")
+
+    example = EquityScreen(
+        revenue_cagr_5y=0.06,
+        eps_cagr_5y=0.05,
+        roic=0.11,
+        operating_margin=0.14,
+        fcf_yield=0.045,
+        net_debt_to_ebitda=1.8,
+        interest_coverage=6.5,
+        forward_pe=14.5,
+        shares_out_growth_5y=0.01,
+    )
+
+    print("Example comments for a retained individual equity:")
+    for c in security_screen_comment(example):
+        print(f"  - {c}")
+
+
+# =============================================================================
+# 13. MAIN
+# =============================================================================
+
+def main() -> None:
+    print_title("MARKUS RZENKOWSKI INVESTMENT THESIS TOOLKIT")
+    print("Framework: client-suitability first, IPS-style, target allocations + policy ranges")
+    print("Fixed income is treated as a core portfolio anchor, including a defined-maturity bond ETF ladder.")
+    print("Private credit is included only as a very small satellite allocation.")
+    print("Crypto is optional and tightly capped.")
+    print("Sharpe ratio, Treynor ratio, and Jensen's alpha are explicitly included in the KPI framework.\n")
+
+    print_current_portfolio()
+    print_concentration_diagnostics()
+    print_target_allocation()
+    print_rebalance_plan()
+    print_kpi_report()
+    print_scenarios()
+    print_monte_carlo()
+    print_example_security_screen()
+
+
+if __name__ == "__main__":
+    main()

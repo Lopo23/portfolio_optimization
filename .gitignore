@@ -1,0 +1,8 @@
+# Datendateien
+data/
+
+# Python & PyCharm
+.venv/
+.idea/
+__pycache__/
+*.pyc

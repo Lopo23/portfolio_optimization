@@ -477,7 +477,7 @@ ASSET_META: dict[str, dict] = {
         "name": "Xtrackers II EUR Government Bond UCITS ETF 1C",
         "isin": "LU0290355717",
         "klasse": "Bond ETF", "sektor": "Anleihen", "region": "Europa",
-        "esg_score": None,
+        "esg_score": 7.450,
         "esg_note": "EU-Staatsanleihen, höhere ESG-Standards vs. EM",
     },
     "XBLC GY Equity": {
@@ -498,14 +498,14 @@ ASSET_META: dict[str, dict] = {
         "name": "Vanguard USD Corporate Bond UCITS ETF",
         "isin": "IE00BZ163H91",
         "klasse": "Bond ETF", "sektor": "Anleihen", "region": "USA",
-        "esg_score": None,
+        "esg_score": 7.250,
         "esg_note": "US-IG Corporate, kein ESG-Filter",
     },
     "MTD FP Equity": {
         "name": "AMUNDI EURO GOVERNMENT INFLATION-LINKED BOND UCITS ETF ACC",
         "isin": "LU1650491282",
         "klasse": "Bond ETF", "sektor": "Anleihen", "region": "Global",
-        "esg_score": None,
+        "esg_score": 7.40,
         "esg_note": "Globale Staatsanleihen-Diversifikation",
     },
     "OM3F GY Equity": {
@@ -526,7 +526,7 @@ ASSET_META: dict[str, dict] = {
         "name": "iShares Core EUR Govt Bond UCITS ETF",
         "isin": "IE00B4WXJJ64",
         "klasse": "Bond ETF", "sektor": "Anleihen", "region": "Eurozone",
-        "esg_score": None,
+        "esg_score": 7.50,
         "esg_note": "Eurozone-Staatsanleihen, solides ESG",
     },
     "CSBGE3 IM Equity": {
@@ -540,7 +540,7 @@ ASSET_META: dict[str, dict] = {
         "name": "iShares USD Corp Bond UCITS ETF",
         "isin": "IE00B3F81G20",
         "klasse": "Bond ETF", "sektor": "Anleihen", "region": "USA",
-        "esg_score": None,
+        "esg_score": 7.20,
         "esg_note": "US-Investment-Grade, kein ESG-Filter",
     },
 
@@ -578,8 +578,8 @@ ASSET_META: dict[str, dict] = {
     # ── FUND ─────────────────────────────────────────────────────────────────
 
     "VNGA60 IM Equity": {
-        "name": "Vanguard LifeStrategy 60% Equity UCITS ETF (EUR) Accumulating",
-        "isin": "IE00BMVB5Q45",
+        "name": "Vanguard LifeStrategy 60% Equity UCITS ETF Accumulating",
+        "isin": "IE00BMVB5P51",
         "klasse": "Fund", "sektor": "Diversifiziert Aktien", "region": "Global",
         "esg_score": None,
         "esg_note": "60/40 Multi-Asset, kein ESG-Filter, breite Diversifikation",
@@ -589,9 +589,9 @@ ASSET_META: dict[str, dict] = {
 
     "catholic index": {
         "name": "Catholic Values Index (intern)",
-        "isin": None,
+        "isin": "",
         "klasse": "Index", "sektor": "Diversifiziert Aktien", "region": "Global",
-        "esg_score": None,
+        "esg_score": 3.826,
         "esg_note": "Explizite Ausschlüsse (Waffen, Abtreibung), hohe ESG-Standards",
     },
 

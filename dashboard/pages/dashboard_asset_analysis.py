@@ -124,10 +124,16 @@ def meta(a: str) -> dict:
     m = dict(asset_meta_ldr.get(a, {}))
     if a in META_DF.index:
         row = META_DF.loc[a]
+        m["name"]      = row.get("name",      a)
+        m["isin"]      = row.get("isin",      None)
+        m["klasse"]    = row.get("klasse",    "–")
         m["sektor"]    = row.get("sektor",    "–")
         m["region"]    = row.get("region",    "–")
         m["esg_score"] = row.get("esg_score", None)
     else:
+        m.setdefault("name",      a)
+        m.setdefault("isin",      None)
+        m.setdefault("klasse",    m.get("asset_class", "–"))
         m.setdefault("sektor",    "–")
         m.setdefault("region",    "–")
         m.setdefault("esg_score", None)
@@ -164,9 +170,11 @@ def calc_metrics():
         m     = meta(col)
         rows.append({
             "Asset":        col,
-            "Klasse":       m.get("asset_class", "–"),
-            "Sektor":       m.get("sektor", "–"),
-            "Region":       m.get("region", "–"),
+            "Name":         m.get("name",      col),
+            "ISIN":         m.get("isin",      None),
+            "Klasse":       m.get("klasse",    "–"),
+            "Sektor":       m.get("sektor",    "–"),
+            "Region":       m.get("region",    "–"),
             "ESG":          m.get("esg_score", None),
             "Ann. Rendite": ann_r,
             "Ann. Vola":    ann_v,
@@ -386,10 +394,12 @@ tbl = (metrics
        .copy())
 
 disp = pd.DataFrame(index=tbl.index)
+disp["Name"]         = tbl["Name"]
+disp["ISIN"]         = tbl["ISIN"].fillna("–")
 disp["Klasse"]       = tbl["Klasse"]
 disp["Sektor"]       = tbl["Sektor"]
 disp["Region"]       = tbl["Region"]
-disp["ESG"]          = tbl["ESG"].apply(lambda x: f"{x} ({esg_label(x)})" if pd.notna(x) and x is not None else "–")
+disp["ESG"]          = tbl["ESG"].apply(lambda x: f"{x:.2f} ({esg_label(x)})" if pd.notna(x) and x is not None else "–")
 disp["Ann. Rendite"] = tbl["Ann. Rendite"].map(lambda x: f"{x*100:+.2f}%" if pd.notna(x) else "–")
 disp["Ann. Vola"]    = tbl["Ann. Vola"].map(lambda x: f"{x*100:.2f}%"     if pd.notna(x) else "–")
 disp["Sharpe"]       = tbl["Sharpe"].map(lambda x: f"{x:.3f}"             if pd.notna(x) else "–")

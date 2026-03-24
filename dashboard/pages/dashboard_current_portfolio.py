@@ -140,7 +140,7 @@ def get_data():
 
 data = get_data()
 
-prices_daily = data["prices"]["daily"]
+prices_daily = data["prices_daily"]
 prices_monthly = data["prices_monthly"]
 weights        = data["weights"]
 summary_df     = data["summary_df"]

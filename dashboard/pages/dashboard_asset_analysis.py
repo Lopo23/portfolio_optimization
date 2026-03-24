@@ -121,22 +121,30 @@ ALL_CLASSES  = sorted(asset_classes.keys())
 A_COLORS     = {a: COLORS[i % len(COLORS)] for i, a in enumerate(ALL_ASSETS)}
 
 def meta(a: str) -> dict:
+    """Kombiniert Loader-Meta + asset_metadata.py.
+    Unterstützt beide Feldnamen-Konventionen:
+      - Deutsch (alt):  klasse / sektor
+      - Englisch (neu): asset_class / sector
+    """
     m = dict(asset_meta_ldr.get(a, {}))
     if a in META_DF.index:
         row = META_DF.loc[a]
-        m["name"]      = row.get("name",      a)
-        m["isin"]      = row.get("isin",      None)
-        m["klasse"]    = row.get("klasse",    "–")
-        m["sektor"]    = row.get("sektor",    "–")
-        m["region"]    = row.get("region",    "–")
-        m["esg_score"] = row.get("esg_score", None)
+        m["klasse"]    = (row.get("klasse") or row.get("asset_class")
+                          or m.get("asset_class", "–"))
+        m["sektor"]    = row.get("sektor") or row.get("sector") or "–"
+        m["region"]    = row.get("region",     "–")
+        m["esg_score"] = row.get("esg_score",  None)
+        m["name"]      = row.get("name",       a)
+        m["isin"]      = row.get("isin",       None)
+        m["asset_class"] = m["klasse"]
     else:
-        m.setdefault("name",      a)
-        m.setdefault("isin",      None)
         m.setdefault("klasse",    m.get("asset_class", "–"))
-        m.setdefault("sektor",    "–")
+        m.setdefault("sektor",    m.get("sector", "–"))
         m.setdefault("region",    "–")
         m.setdefault("esg_score", None)
+        m.setdefault("name",      a)
+        m.setdefault("isin",      None)
+        m.setdefault("asset_class", m.get("klasse", "–"))
     return m
 
 # 5-Jahres-Fenster (monatlich)

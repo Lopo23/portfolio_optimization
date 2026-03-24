@@ -93,7 +93,7 @@ ASSET_META: dict[str, dict] = {
         "name": "Taiwan Semiconductor Manufacturing Co. Ltd. (ADR)",
         "isin": "US8740391003",
         "asset_class": "Stocks", "sector": "Technology", "region": "Taiwan",
-        "esg_score": 4.79,
+        "esg_score": 5.69,
         "esg_note": "High water consumption, but strong governance and 100% renewable target",
     },
     "SIE GY Equity": {

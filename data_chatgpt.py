@@ -23,9 +23,12 @@ Benötigte Pakete:
     pip install pandas numpy openpyxl
 """
 
+from __future__ import annotations  # Python 3.9: aktiviert moderne Type-Hint-Syntax
+
 import json
 import warnings
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -39,15 +42,15 @@ warnings.filterwarnings("ignore")
 
 # Optional: wenn gesetzt, wird der Start NICHT früher als dieses Datum erlaubt.
 # Für rein datengetriebenen Start einfach auf None lassen.
-MIN_START_DATE = None   # z. B. "2021-03-31"
+MIN_START_DATE: Optional[str] = None   # z. B. "2021-03-31"
 
 # Optional: Analyseende hart begrenzen; sonst automatisch gemeinsames Ende
-MAX_END_DATE = None
+MAX_END_DATE: Optional[str] = None
 
 MONTHS_PER_YEAR = 12
 
 # Optionale manuelle Metadaten – werden mit Scan-Daten gemergt
-MANUAL_META: dict[str, dict] = {
+MANUAL_META: Dict[str, Dict] = {
     # "bitcoin": {"display_name": "Bitcoin", "region": "Global"},
 }
 
@@ -56,7 +59,7 @@ MANUAL_META: dict[str, dict] = {
 # READER: Bloomberg Excel
 # ═════════════════════════════════════════════
 
-def read_bloomberg_excel(filepath: Path, name: str = None) -> tuple[str, pd.DataFrame]:
+def read_bloomberg_excel(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
     """
     Bloomberg-Format:
         Zeile 1:  Security | <name>
@@ -90,11 +93,11 @@ def read_bloomberg_excel(filepath: Path, name: str = None) -> tuple[str, pd.Data
 
 def read_simple_excel(
     filepath: Path,
-    name: str = None,
+    name: Optional[str] = None,
     header_row: int = 2,
     date_col: str = "date",
     price_col: str = "close",
-) -> tuple[str, pd.DataFrame]:
+) -> Tuple[str, pd.DataFrame]:
     """
     Einfaches Excel-Format:
         Zeile 1–2: leer / Metadaten
@@ -138,7 +141,7 @@ def read_simple_excel(
 # READER: JSON
 # ═════════════════════════════════════════════
 
-def read_json_fund(filepath: Path, name: str = None) -> tuple[str, pd.DataFrame]:
+def read_json_fund(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
     """
     JSON-Format:
         {
@@ -224,7 +227,7 @@ def read_json_fund(filepath: Path, name: str = None) -> tuple[str, pd.DataFrame]
 # READER: CSV
 # ═════════════════════════════════════════════
 
-def read_csv_fund(filepath: Path, name: str = None) -> tuple[str, pd.DataFrame]:
+def read_csv_fund(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
     """
     CSV mit Preiszeitreihen – auto-erkennt Trennzeichen und Spalten.
     Unterstützt OHLCV (nimmt 'close') und Semikolon-Separator.
@@ -280,7 +283,7 @@ def read_csv_fund(filepath: Path, name: str = None) -> tuple[str, pd.DataFrame]:
 # FORMAT-ERKENNUNG
 # ═════════════════════════════════════════════
 
-def detect_and_read(filepath: Path, name: str = None) -> tuple[str, pd.DataFrame]:
+def detect_and_read(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
     """
     Erkennt das Dateiformat automatisch und wählt den passenden Reader:
 
@@ -346,7 +349,7 @@ def detect_series_spacing(df: pd.DataFrame) -> str:
 # FOLDER SCAN
 # ═════════════════════════════════════════════
 
-def scan_folder(root: Path) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
+def scan_folder(root: Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Dict]]:
     """
     Durchsucht root + alle Unterordner nach .xlsx / .json / .csv.
     Unterordnername wird als Asset-Klasse verwendet.
@@ -367,8 +370,8 @@ def scan_folder(root: Path) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
     print(f"\n📂  Scanne: {root}")
     print(f"    {len(files)} Dateien gefunden (.xlsx / .json / .csv)\n")
 
-    raw_data: dict[str, pd.DataFrame] = {}
-    meta: dict[str, dict] = {}
+    raw_data: Dict[str, pd.DataFrame] = {}
+    meta: Dict[str, Dict] = {}
 
     for filepath in files:
         subfolder = filepath.parent.name if filepath.parent != root else "Other"
@@ -411,9 +414,9 @@ def scan_folder(root: Path) -> tuple[dict[str, pd.DataFrame], dict[str, dict]]:
 # ═════════════════════════════════════════════
 
 def build_monthly_price_matrix(
-    raw_data: dict[str, pd.DataFrame],
-    start_date: str | None = MIN_START_DATE,
-    end_date: str | None = MAX_END_DATE,
+    raw_data: Dict[str, pd.DataFrame],
+    start_date: Optional[str] = MIN_START_DATE,
+    end_date: Optional[str] = MAX_END_DATE,
 ) -> pd.DataFrame:
     """
     Harmonisiert alle Rohreihen auf Monatsultimo und bestimmt danach
@@ -548,10 +551,10 @@ def compute_metrics(returns: pd.DataFrame) -> pd.DataFrame:
 # ═════════════════════════════════════════════
 
 def load_new_portfolio(
-    data_dir: str | Path = None,
-    start_date: str | None = MIN_START_DATE,
-    end_date: str | None = MAX_END_DATE,
-) -> dict:
+    data_dir: Optional[Path] = None,
+    start_date: Optional[str] = MIN_START_DATE,
+    end_date: Optional[str] = MAX_END_DATE,
+) -> Dict:
     """
     Lädt alle Assets aus data/New Portfolio und gibt zurück:
 
@@ -591,7 +594,7 @@ def load_new_portfolio(
     metrics_df = compute_metrics(returns)
 
     # 4) Asset-Klassen-Mapping nur für tatsächlich enthaltene Assets
-    asset_classes: dict[str, list[str]] = {}
+    asset_classes: Dict[str, List[str]] = {}
     for sec, m in asset_meta.items():
         if sec not in prices_monthly.columns:
             continue

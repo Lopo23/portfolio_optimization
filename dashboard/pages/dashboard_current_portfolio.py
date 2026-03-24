@@ -118,7 +118,7 @@ PLOTLY_BASE = dict(
                 font=dict(size=10, color="#8A9BB0")),
 )
 
-RF = 0.02   # risikofreier Zinssatz für Lambda
+RF = 0.02
 
 
 def layout(fig, title="", height=340):
@@ -218,29 +218,17 @@ def compute_metrics(returns: pd.DataFrame, weights: pd.Series, freq: str) -> pd.
 
 
 def compute_lambda(returns: pd.DataFrame, weights: pd.Series, freq: str, rf: float = RF):
-    """
-    λ = 1 / (w^T · Σ⁻¹ · (E(r) - r_f))
-
-    E(r)  = geometrisch annualisierte Rendite je Asset
-    Σ     = annualisierte Kovarianzmatrix
-    rf    = jährlicher risikofreier Zinssatz
-    """
     scale = 252 if freq == "daily" else 12
-
     cols = weights.index.tolist()
     r    = returns[cols].dropna()
     w    = weights.reindex(cols).dropna().values
 
-    # E(r) geometrisch annualisiert
     total_r = (1 + r).prod() - 1
     ann_r   = (1 + total_r) ** (scale / len(r)) - 1
     er      = ann_r.values
-
-    # Kovarianzmatrix annualisiert
     cov_ann = r.cov().values * scale
-
-    # Lambda
     excess  = er - rf
+
     try:
         cov_inv = np.linalg.inv(cov_ann)
         denom   = float(w @ cov_inv @ excess)
@@ -248,7 +236,6 @@ def compute_lambda(returns: pd.DataFrame, weights: pd.Series, freq: str, rf: flo
     except np.linalg.LinAlgError:
         lam, denom = np.nan, np.nan
 
-    # Sensitivität
     sens = []
     for rf_t in [0.00, 0.01, 0.02, 0.03, 0.04, 0.05]:
         ex = er - rf_t
@@ -259,7 +246,6 @@ def compute_lambda(returns: pd.DataFrame, weights: pd.Series, freq: str, rf: flo
             l = np.nan
         sens.append({"r_f": f"{rf_t:.0%}", "λ": l})
 
-    # Per-Asset Excess Return Tabelle
     asset_df = pd.DataFrame({
         "Asset":    cols,
         "E(r)":     [f"{x:.2%}" for x in er],
@@ -267,31 +253,17 @@ def compute_lambda(returns: pd.DataFrame, weights: pd.Series, freq: str, rf: flo
         "Gewicht":  [f"{v:.2%}" for v in w],
     })
 
-    return {
-        "lambda":   lam,
-        "denom":    denom,
-        "er":       er,
-        "excess":   excess,
-        "asset_df": asset_df,
-        "sens_df":  pd.DataFrame(sens),
-    }
+    return {"lambda": lam, "asset_df": asset_df, "sens_df": pd.DataFrame(sens)}
 
 
 def interp_lambda(lam: float) -> tuple[str, str]:
-    """Gibt (Beschreibung, Farbe) zurück."""
-    if np.isnan(lam):
-        return "Nicht berechenbar", "#EF4444"
-    if lam < 0:
-        return "Negativ – impliziert irrationales Verhalten", "#EF4444"
-    if lam < 1:
-        return "Sehr geringe Risikoaversion (nahezu risikoneutral)", "#F59E0B"
-    if lam < 3:
-        return "Geringe bis moderate Risikoaversion", "#84CC16"
-    if lam < 6:
-        return "Moderate Risikoaversion – typisch für institutionelle Anleger", "#10B981"
-    if lam < 10:
-        return "Hohe Risikoaversion", "#F59E0B"
-    return "Sehr hohe Risikoaversion", "#EF4444"
+    if np.isnan(lam):  return "Nicht berechenbar", "#EF4444"
+    if lam < 0:        return "Negativ – impliziert irrationales Verhalten", "#EF4444"
+    if lam < 1:        return "Sehr geringe Risikoaversion (nahezu risikoneutral)", "#F59E0B"
+    if lam < 3:        return "Geringe bis moderate Risikoaversion", "#84CC16"
+    if lam < 6:        return "Moderate Risikoaversion – typisch für institutionelle Anleger", "#10B981"
+    if lam < 10:       return "Hohe Risikoaversion", "#F59E0B"
+    return                    "Sehr hohe Risikoaversion", "#EF4444"
 
 
 # ─────────────────────────────────────────────
@@ -317,7 +289,6 @@ with h_right:
                             help="Ein = Monatsrenditen (×12) · Aus = Tagesrenditen (×252)")
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Renditen & Frequenz je nach Schalter
 if use_monthly:
     returns  = prices_monthly.pct_change().dropna()
     freq     = "monthly"
@@ -329,11 +300,9 @@ else:
     freq_lbl = "Tagesrenditen"
     scale    = 252
 
-# Metriken neu berechnen
 metrics_df = compute_metrics(returns, weights, freq)
 port_m     = metrics_df.loc["PORTFOLIO"]
 
-# Portfolio-Zeitreihen
 w_norm       = weights.reindex(returns.columns).dropna()
 w_norm       = w_norm / w_norm.sum()
 port_returns = returns[w_norm.index].mul(w_norm, axis=1).sum(axis=1)
@@ -347,13 +316,13 @@ st.markdown("---")
 # KPI ZEILE
 # ─────────────────────────────────────────────
 k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
-k1.metric("Portfoliowert",     f"€ {total_value/1e6:.1f} Mio.")
-k2.metric("Ann. Rendite",      f"{port_m['ann_return']:.2f} %")
-k3.metric("Ann. Volatilität",  f"{port_m['ann_vol']:.2f} %")
-k4.metric("Sharpe Ratio",      f"{port_m['sharpe']:.2f}")
-k5.metric("Sortino Ratio",     f"{port_m['sortino']:.2f}")
-k6.metric("Max Drawdown",      f"{port_m['max_drawdown']:.2f} %")
-k7.metric("CVaR 95 %",         f"{port_m['cvar_95']:.2f} %")
+k1.metric("Portfoliowert (Mio. €)",  f"{total_value/1e6:.2f}")
+k2.metric("Ann. Rendite (%)",        f"{port_m['ann_return']:.2f}")
+k3.metric("Ann. Volatilität (%)",    f"{port_m['ann_vol']:.2f}")
+k4.metric("Sharpe Ratio",            f"{port_m['sharpe']:.3f}")
+k5.metric("Sortino Ratio",           f"{port_m['sortino']:.3f}")
+k6.metric("Max Drawdown (%)",        f"{port_m['max_drawdown']:.2f}")
+k7.metric("CVaR 95 % (mtl.)",        f"{port_m['cvar_95']:.2f}")
 
 st.markdown("---")
 
@@ -380,7 +349,7 @@ with c1:
         hovertemplate="%{y:.3f}<extra>Portfolio</extra>",
     ))
     layout(fig, "Kumulierte Renditen (Basis = 1)", height=360)
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 with c2:
     fig = go.Figure()
@@ -399,7 +368,7 @@ with c2:
         fill="tozeroy", fillcolor="rgba(239,68,68,0.06)",
     ))
     layout(fig, "Drawdown (%)", height=360)
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
@@ -419,13 +388,12 @@ with c1:
                 "max_drawdown": "Max DD %", "cvar_95": "CVaR 95%",
                 "total_return": "Total %",
             }))
-    # Portfolio ans Ende
     mask  = disp["Ticker"] == "PORTFOLIO"
     disp  = pd.concat([disp[~mask], disp[mask]], ignore_index=True)
     st.markdown(f"**Kennzahlen je Asset** *(Basis: {freq_lbl})*")
     st.dataframe(
         disp[["Name", "Rendite %", "Vola %", "Sharpe", "Sortino", "Max DD %", "CVaR 95%"]],
-        width='stretch', hide_index=True, height=340,
+        use_container_width=True, hide_index=True, height=340,
     )
 
 with c2:
@@ -439,12 +407,12 @@ with c2:
         hovertemplate="%{x} / %{y}<br>ρ = %{z:.2f}<extra></extra>",
     ))
     layout(fig, f"Korrelationsmatrix ({freq_lbl})", height=380)
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
 # ─────────────────────────────────────────────
-# LAMBDA – RISIKOAVERSIONSKOEFFIZIENT
+# LAMBDA
 # ─────────────────────────────────────────────
 st.markdown('<p class="section-label">Risikoaversion</p>', unsafe_allow_html=True)
 
@@ -476,30 +444,22 @@ with c1:
 
 with c2:
     st.markdown(f"**Erwartete Renditen & Excess Returns** *(annualisiert)*")
-    st.dataframe(lam_data["asset_df"], width='stretch', hide_index=True, height=300)
+    st.dataframe(lam_data["asset_df"], use_container_width=True, hide_index=True, height=300)
 
 with c3:
-    # Sensitivitäts-Balken
     sens     = lam_data["sens_df"]
     is_base  = sens["r_f"] == f"{RF:.0%}"
     bar_cols = [lam_color if b else "#1E3A5F" for b in is_base]
-
     fig = go.Figure(go.Bar(
-        x=sens["r_f"],
-        y=sens["λ"],
+        x=sens["r_f"], y=sens["λ"],
         marker=dict(color=bar_cols, line=dict(color="#080C14", width=1)),
-        text=sens["λ"].round(2),
-        textposition="outside",
+        text=sens["λ"].round(2), textposition="outside",
         textfont=dict(color="#8A9BB0", size=10),
         hovertemplate="r_f = %{x}<br>λ = %{y:.4f}<extra></extra>",
     ))
     layout(fig, "Sensitivität λ nach r_f", height=300)
-    fig.update_layout(
-        xaxis_title="Risikofreier Zinssatz r_f",
-        yaxis_title="λ",
-        showlegend=False,
-    )
-    st.plotly_chart(fig, width='stretch')
+    fig.update_layout(xaxis_title="Risikofreier Zinssatz r_f", yaxis_title="λ", showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
@@ -522,19 +482,19 @@ def donut(labels, values, colors, title):
 with c1:
     labels = [summary_df.loc[t, "name"] for t in weights.index]
     st.plotly_chart(donut(labels, weights.values, COLORS[:len(weights)],
-                          "Portfoliogewichte"), width='stretch')
+                          "Portfoliogewichte"), use_container_width=True)
 
 with c2:
     cls = summary_df.groupby("class")["eur"].sum().reset_index()
     st.plotly_chart(donut(cls["class"].tolist(), cls["eur"].tolist(),
                           ["#3B82F6", "#10B981", "#F59E0B"], "Asset-Klassen"),
-                    width='stretch')
+                    use_container_width=True)
 
 with c3:
     reg = summary_df.groupby("region")["eur"].sum().reset_index()
     st.plotly_chart(donut(reg["region"].tolist(), reg["eur"].tolist(),
                           ["#EF4444", "#8B5CF6", "#06B6D4", "#F97316"], "Regionen"),
-                    width='stretch')
+                    use_container_width=True)
 
 st.markdown("---")
 
@@ -549,7 +509,6 @@ with c1:
     sec_df = (summary_df.groupby("sector")["eur"].sum()
               .reset_index().sort_values("eur", ascending=True))
     sec_df["pct"] = sec_df["eur"] / total_value * 100
-
     fig = go.Figure(go.Bar(
         x=sec_df["pct"], y=sec_df["sector"], orientation="h",
         marker=dict(color=sec_df["pct"],
@@ -561,7 +520,7 @@ with c1:
     ))
     layout(fig, "Sektorallokation", height=300)
     fig.update_layout(xaxis_title="Gewicht (%)", yaxis_title="")
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, use_container_width=True)
 
 with c2:
     conc        = summary_df.copy()
@@ -602,12 +561,9 @@ detail = detail.rename(columns={
 })
 st.dataframe(
     detail[["Ticker", "Name", "Klasse", "Region", "Sektor", "Marktwert", "Gewicht"]],
-    width='stretch', hide_index=True,
+    use_container_width=True, hide_index=True,
 )
 
-# ─────────────────────────────────────────────
-# FOOTER
-# ─────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     f'<p style="color:#2A3A50;font-size:0.72rem;text-align:center;">'

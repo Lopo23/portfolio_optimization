@@ -34,8 +34,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from scipy.optimize import minimize, LinearConstraint, Bounds
 
-from data_chatgpt import load_new_portfolio
-from asset_metadaten import get_df as get_meta_df, esg_label
+from new_portfolio_loader import load_new_portfolio
+from asset_metadata import get_df as get_meta_df, esg_label
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -43,15 +43,28 @@ from asset_metadaten import get_df as get_meta_df, esg_label
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 DEFAULT_MIN_W            = 0.00   # Mindestgewicht je Asset
 DEFAULT_MAX_W            = 0.35   # Maximalgewicht je Asset
+# Constraints: [MIN, MAX] als Bereich – Solver hält beide Grenzen ein
+DEFAULT_CRYPTO_MIN       = 0.00   # C1 · Crypto gesamt            ≥  0 %
 DEFAULT_CRYPTO_MAX       = 0.05   # C1 · Crypto gesamt            ≤  5 %
-DEFAULT_SINGLE_STOCK_MAX = 0.10   # C2 · Einzelaktie              ≤ 10 %
-DEFAULT_STOCKS_TOTAL_MAX = 0.40   # C3 · Stocks gesamt            ≤ 40 %
+DEFAULT_SINGLE_STOCK_MAX = 0.10   # C2 · Einzelaktie (nur Stocks) ≤ 10 %
+DEFAULT_STOCKS_MIN       = 0.00   # C3 · Stocks gesamt            ≥  0 %
+DEFAULT_STOCKS_MAX       = 0.40   # C3 · Stocks gesamt            ≤ 40 %
+DEFAULT_SECTOR_MIN       = 0.00   # C4 · Branche                  ≥  0 %
 DEFAULT_SECTOR_MAX       = 0.30   # C4 · Branche                  ≤ 30 %
-DEFAULT_REGION_MAX       = 0.40   # C5 · Region                   ≤ 40 %
+DEFAULT_REGION_MIN       = 0.00   # C5 · Region (exkl. Global/DM/EM) ≥  0 %
+DEFAULT_REGION_MAX       = 0.40   # C5 · Region (exkl. Global/DM/EM) ≤ 40 %
 DEFAULT_ESG_AVG_MIN      = 0.0    # C6 · Ø-ESG (nur bew. Titel)  ≥  0 (0 = aus)
+DEFAULT_ETF_MIN          = 0.00   # C7 · ETF gesamt               ≥  0 %
+DEFAULT_ETF_MAX          = 1.00   # C7 · ETF gesamt               ≤ 100 %
+DEFAULT_BOND_ETF_MIN     = 0.00   # C8 · Bond ETF gesamt          ≥  0 %
+DEFAULT_BOND_ETF_MAX     = 1.00   # C8 · Bond ETF gesamt          ≤ 100 %
+DEFAULT_CATHOLIC_MIN     = 0.00   # C9 · Catholic Index           ≥  0 %
+DEFAULT_CATHOLIC_MAX     = 0.10   # C9 · Catholic Index           ≤ 10 %
 DEFAULT_LOOKBACK_MONTHS  = 60
 DEFAULT_TEST_PCT         = 0.30
 DEFAULT_LAMBDA           = 4.0
+# Regionen die NICHT unter den Region-Constraint fallen (geografisch undefiniert)
+UNCONSTRAINED_REGIONS    = {"Global", "Developed Markets", "Emerging Markets"}
 
 
 # ─────────────────────────────────────────────
@@ -220,13 +233,29 @@ def dd_s(cum): return (cum-cum.cummax())/cum.cummax()*100
 # ║    → berechnet via LP-ähnlichem Iteriationsverfahren                       ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 def build_constraints(assets, min_w, max_w,
-                      crypto_max, single_stock_max, stocks_total_max,
-                      sector_max, region_max, esg_avg_min):
+                      crypto_min, crypto_max,
+                      single_stock_max,
+                      stocks_min, stocks_max,
+                      sector_min, sector_max,
+                      region_min, region_max,
+                      etf_min, etf_max,
+                      bond_etf_min, bond_etf_max,
+                      catholic_min, catholic_max,
+                      esg_avg_min):
     n   = len(assets)
-    lo  = np.full(n, min_w)
-    hi  = np.full(n, max_w)
+    lo  = np.full(n, float(min_w))
+    hi  = np.full(n, float(max_w))
 
     cons = [{"type": "eq", "fun": lambda w: w.sum() - 1.0}]
+
+    # Bounds als explizite ineq-Constraints  (doppelte Sicherheit –
+    # SLSQP respektiert bounds bei sehr vielen Constraints manchmal nicht)
+    for i in range(n):
+        _hi = float(hi[i])
+        cons.append({"type":"ineq","fun": lambda w, ii=i, c=_hi: c - w[ii]})
+        if float(lo[i]) > 1e-9:
+            _lo = float(lo[i])
+            cons.append({"type":"ineq","fun": lambda w, ii=i, c=_lo: w[ii] - c})
 
     crypto_idx = []; stock_idx = []
     by_sector  = {}; by_region = {}
@@ -248,34 +277,50 @@ def build_constraints(assets, min_w, max_w,
         if esg is not None:
             esg_pairs.append((i, float(esg)))
 
-    # C1 · Crypto gesamt ≤ crypto_max
+    # C1 · Crypto: crypto_min ≤ sum ≤ crypto_max
     if crypto_idx:
         _idx = crypto_idx[:]
         cons.append({"type":"ineq",
                      "fun": lambda w, idx=_idx, c=float(crypto_max): c - sum(w[j] for j in idx)})
+        if float(crypto_min) > 0:
+            cons.append({"type":"ineq",
+                         "fun": lambda w, idx=_idx, c=float(crypto_min): sum(w[j] for j in idx) - c})
 
-    # C2 · Einzelaktie ≤ single_stock_max
+    # C2 · Einzelaktie ≤ single_stock_max  (nur echte Stocks, keine ETFs)
     for i in stock_idx:
         cons.append({"type":"ineq",
                      "fun": lambda w, ii=i, c=float(single_stock_max): c - w[ii]})
 
-    # C3 · Stocks gesamt ≤ stocks_total_max
+    # C3 · Stocks gesamt: stocks_min ≤ sum ≤ stocks_max
     if stock_idx:
         _idx = stock_idx[:]
         cons.append({"type":"ineq",
-                     "fun": lambda w, idx=_idx, c=float(stocks_total_max): c - sum(w[j] for j in idx)})
+                     "fun": lambda w, idx=_idx, c=float(stocks_max): c - sum(w[j] for j in idx)})
+        if float(stocks_min) > 0:
+            cons.append({"type":"ineq",
+                         "fun": lambda w, idx=_idx, c=float(stocks_min): sum(w[j] for j in idx) - c})
 
-    # C4 · Branche ≤ sector_max
+    # C4 · Branche: sector_min ≤ sum ≤ sector_max  (je Sektor separat)
     for sec_name, idx in by_sector.items():
         _idx = idx[:]
         cons.append({"type":"ineq",
                      "fun": lambda w, idx=_idx, c=float(sector_max): c - sum(w[j] for j in idx)})
+        if float(sector_min) > 0:
+            cons.append({"type":"ineq",
+                         "fun": lambda w, idx=_idx, c=float(sector_min): sum(w[j] for j in idx) - c})
 
-    # C5 · Region ≤ region_max
+    # C5 · Region: region_min ≤ sum ≤ region_max
+    # EXKLUDIERT: Global, Developed Markets, Emerging Markets
+    # → diese sind geografisch undefiniert und unterliegen keinem Region-Cap
     for reg_name, idx in by_region.items():
+        if reg_name in UNCONSTRAINED_REGIONS:
+            continue   # Global/DM/EM: kein Cap
         _idx = idx[:]
         cons.append({"type":"ineq",
                      "fun": lambda w, idx=_idx, c=float(region_max): c - sum(w[j] for j in idx)})
+        if float(region_min) > 0:
+            cons.append({"type":"ineq",
+                         "fun": lambda w, idx=_idx, c=float(region_min): sum(w[j] for j in idx) - c})
 
     # C6 · Gewichteter Ø-ESG (nur Titel mit Score) ≥ esg_avg_min
     # Formel: Σ(w_i·esg_i) / Σ(w_i)  ≥  esg_avg_min
@@ -287,7 +332,40 @@ def build_constraints(assets, min_w, max_w,
                      "fun": lambda w, ep=_ep, mn=_mn:
                          sum(w[j]*s for j,s in ep) - mn * sum(w[j] for j,_ in ep)})
 
-    bounds_list = [(lo[i], hi[i]) for i in range(n)]
+    # C7 · ETF gesamt: etf_min ≤ Σ w_i ≤ etf_max
+    etf_idx = [i for i, a in enumerate(assets)
+                if ameta(a).get("asset_class","").lower() == "etf"]
+    if etf_idx:
+        _idx = etf_idx[:]
+        cons.append({"type":"ineq",
+                     "fun": lambda w, idx=_idx, c=float(etf_max): c - sum(w[j] for j in idx)})
+        if float(etf_min) > 1e-9:
+            cons.append({"type":"ineq",
+                         "fun": lambda w, idx=_idx, c=float(etf_min): sum(w[j] for j in idx) - c})
+
+    # C8 · Bond ETF gesamt: bond_etf_min ≤ Σ w_i ≤ bond_etf_max
+    bond_etf_idx = [i for i, a in enumerate(assets)
+                    if ameta(a).get("asset_class","").lower() == "bond etf"]
+    if bond_etf_idx:
+        _idx = bond_etf_idx[:]
+        cons.append({"type":"ineq",
+                     "fun": lambda w, idx=_idx, c=float(bond_etf_max): c - sum(w[j] for j in idx)})
+        if float(bond_etf_min) > 1e-9:
+            cons.append({"type":"ineq",
+                         "fun": lambda w, idx=_idx, c=float(bond_etf_min): sum(w[j] for j in idx) - c})
+
+    # C9 · Catholic Index: catholic_min ≤ w ≤ catholic_max (einzelnes Asset)
+    catholic_idx = [i for i, a in enumerate(assets) if a.lower() == "catholic index"]
+    if catholic_idx:
+        _idx = catholic_idx[:]
+        cons.append({"type":"ineq",
+                     "fun": lambda w, idx=_idx, c=float(catholic_max): c - sum(w[j] for j in idx)})
+        if float(catholic_min) > 1e-9:
+            cons.append({"type":"ineq",
+                         "fun": lambda w, idx=_idx, c=float(catholic_min): sum(w[j] for j in idx) - c})
+
+    # bounds_list: bleibt als Sicherheitsnetz, wird aber auch als ineq enforzt
+    bounds_list = [(float(lo[i]), float(hi[i])) for i in range(n)]
 
     # ── Feasibler Startpunkt ─────────────────────────────────────────────────
     # Strategie: gleichgewichtet → clip auf bounds → normieren → prüfen ob ineq ok
@@ -380,16 +458,28 @@ def opt_cvar(X, bounds_list, cons, w0, alpha=ALPHA):
     return x, ok
 
 
-def eff_frontier(X, bounds_list, w0, n_pts=22):
+def eff_frontier(X, bounds_list, cons, w0, n_pts=22):
+    """
+    Efficient Frontier UNTER DEN GLEICHEN CONSTRAINTS wie die Optimierung.
+    Nur so liegt das Utility-Portfolio auf der Frontier.
+    Strategie: Min-Varianz für jedes Return-Ziel auf dem constrained Set.
+    """
     n   = X.shape[1]; mu = X.mean().values; cov = X.cov().values
-    eq  = [{"type":"eq","fun": lambda w: w.sum()-1.0}]
+    # cons enthält bereits sum==1 + alle C1-C6
+    # Wir fügen für jeden Punkt eine zusätzliche Return-Mindestbedingung hinzu
     vols, rets = [], []
-    for t in np.linspace(mu.min(), mu.max(), n_pts):
-        c = eq + [{"type":"ineq","fun": lambda w, t=t: float(w@mu)-t}]
+    # Erreichbares Return-Spektrum: teste mit w0
+    r_lo = float(w0 @ mu) * 0.5
+    r_hi = float(mu.max()) * 0.95
+    for t in np.linspace(r_lo, r_hi, n_pts):
+        c = cons + [{"type":"ineq","fun": lambda w, t=t: float(w@mu)-t}]
         r = minimize(lambda w: float(w@cov@w), w0, method="SLSQP",
                      bounds=bounds_list, constraints=c,
-                     options={"maxiter": 1000, "ftol": 1e-9})
+                     options={"maxiter": 2000, "ftol": 1e-10})
         if not r.success: continue
+        # Constraint-Check
+        if any(con["fun"](r.x) < -1e-3 for con in cons if con["type"]=="ineq"):
+            continue
         pr = port_rets(r.x, X)
         vols.append(ann_vol(pr)*100); rets.append(ann_ret(pr)*100)
     return vols, rets
@@ -400,8 +490,15 @@ def eff_frontier(X, bounds_list, w0, n_pts=22):
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner="Optimiere …")
 def run_opt(assets, lookback_months, lam, min_w, max_w, test_pct,
-            crypto_max, single_stock_max, stocks_total_max,
-            sector_max, region_max, esg_avg_min):
+            crypto_min, crypto_max,
+            single_stock_max,
+            stocks_min, stocks_max,
+            sector_min, sector_max,
+            region_min, region_max,
+            etf_min, etf_max,
+            bond_etf_min, bond_etf_max,
+            catholic_min, catholic_max,
+            esg_avg_min):
 
     assets  = list(assets)
     prices  = PM[assets].iloc[-lookback_months:].copy()
@@ -416,8 +513,15 @@ def run_opt(assets, lookback_months, lam, min_w, max_w, test_pct,
 
     bounds_list, cons, w0_feas, esg_pairs = build_constraints(
         assets, min_w, max_w,
-        crypto_max, single_stock_max, stocks_total_max,
-        sector_max, region_max, esg_avg_min,
+        crypto_min, crypto_max,
+        single_stock_max,
+        stocks_min, stocks_max,
+        sector_min, sector_max,
+        region_min, region_max,
+        etf_min, etf_max,
+        bond_etf_min, bond_etf_max,
+        catholic_min, catholic_max,
+        esg_avg_min,
     )
 
     n = len(assets)
@@ -437,8 +541,14 @@ def run_opt(assets, lookback_months, lam, min_w, max_w, test_pct,
             "Constraints lockern oder andere Assets wählen."
         )
 
-    # ── Equal Weight (unkonstrained – echtes EW) ─────────────────────────────
-    w_ew = np.ones(n) / n
+    # ── Equal Weight: bounds-konform (kein echter 1/n wenn max_w < 1/n) ────────
+    # z.B. bei 2 Assets und max_w=0.35 → 1/2=50% > 35% → clip auf 35%, renorm
+    _lo_ew   = np.full(n, float(min_w))
+    _hi_ew   = np.full(n, float(max_w))
+    w_ew_raw = np.ones(n) / n
+    w_ew     = np.clip(w_ew_raw, _lo_ew, _hi_ew)
+    s_ew     = w_ew.sum()
+    w_ew     = w_ew / s_ew if s_ew > 1e-9 else w_ew
 
     # ── Optimierte Portfolios ────────────────────────────────────────────────
     w_util, util_ok  = opt_utility(X_train, lam, bounds_list, cons, w0_feas)
@@ -483,7 +593,7 @@ def run_opt(assets, lookback_months, lam, min_w, max_w, test_pct,
         "w CVaR":   [portfolios["Min CVaR"]["weights"].get(a,0.)    for a in assets],
     }).sort_values("E(r)", ascending=False)
 
-    ef_v, ef_r = eff_frontier(X_train, bounds_list, w0_feas)
+    ef_v, ef_r = eff_frontier(X_train, bounds_list, cons, w0_feas)
 
     return dict(
         assets=assets, esg_pairs=esg_pairs,
@@ -516,8 +626,9 @@ with st.sidebar:
                 if asset_meta_ldr.get(a,{}).get("asset_class","Other") in sel_classes]
 
     _lbl("Assets")
-    default_sel = filtered[:12] if len(filtered) > 12 else filtered
-    sel_assets = st.multiselect("as", filtered, default=default_sel,
+    # Default: ALLE verfügbaren Assets (nicht nur [:12])
+    # → Solver hat genug Spielraum, Constraints feasibel zu erfüllen
+    sel_assets = st.multiselect("as", filtered, default=filtered,
                                  label_visibility="collapsed")
     st.markdown("---")
 
@@ -530,18 +641,55 @@ with st.sidebar:
     st.markdown("---")
 
     _lbl("Constraints")
-    min_w            = st.slider("Min. Gewicht je Asset", 0.00, 0.10, DEFAULT_MIN_W,            0.01)
-    max_w            = st.slider("Max. Gewicht je Asset", 0.05, 1.00, DEFAULT_MAX_W,            0.05)
-    crypto_max       = st.slider("C1 · Crypto ≤",         0.00, 1.00, DEFAULT_CRYPTO_MAX,       0.01)
-    single_stock_max = st.slider("C2 · Einzelaktie ≤",    0.05, 1.00, DEFAULT_SINGLE_STOCK_MAX, 0.01)
-    stocks_total_max = st.slider("C3 · Stocks ≤",         0.10, 1.00, DEFAULT_STOCKS_TOTAL_MAX, 0.05)
-    sector_max       = st.slider("C4 · Branche ≤",        0.10, 1.00, DEFAULT_SECTOR_MAX,       0.05)
-    region_max       = st.slider("C5 · Region ≤",         0.10, 1.00, DEFAULT_REGION_MAX,       0.05)
-    esg_avg_min = st.slider("C6 · Ø-ESG (bew. Titel) ≥", 0.0, 8.0, DEFAULT_ESG_AVG_MIN, 0.1,
+    min_w, max_w = st.slider(
+        "Gewicht je Asset [min, max]", 0.00, 1.00,
+        (DEFAULT_MIN_W, DEFAULT_MAX_W), 0.01)
+
+    crypto_min, crypto_max = st.slider(
+        "C1 · Crypto [min, max]", 0.00, 0.30,
+        (DEFAULT_CRYPTO_MIN, DEFAULT_CRYPTO_MAX), 0.01,
+        help="Crypto/Bitcoin gesamt – Bereich [min, max]")
+
+    single_stock_max = st.slider(
+        "C2 · Einzelaktie ≤  (nur Stocks, keine ETFs)", 0.05, 1.00,
+        DEFAULT_SINGLE_STOCK_MAX, 0.01)
+
+    stocks_min, stocks_max = st.slider(
+        "C3 · Stocks gesamt [min, max]", 0.00, 1.00,
+        (DEFAULT_STOCKS_MIN, DEFAULT_STOCKS_MAX), 0.05,
+        help="Alle Einzelaktien (Stocks) zusammen")
+
+    sector_min, sector_max = st.slider(
+        "C4 · Branche [min, max]", 0.00, 1.00,
+        (DEFAULT_SECTOR_MIN, DEFAULT_SECTOR_MAX), 0.05,
+        help="Gilt je Sektor separat")
+
+    region_min, region_max = st.slider(
+        "C5 · Region [min, max]", 0.00, 1.00,
+        (DEFAULT_REGION_MIN, DEFAULT_REGION_MAX), 0.05,
+        help="Gilt je Region separat. Global/DM/EM sind exkludiert.")
+
+    esg_avg_min = st.slider("C6 · Ø-ESG (bew. Titel) ≥", 0.0, 8.0,
+                             DEFAULT_ESG_AVG_MIN, 0.1,
                              help="Nur Titel mit ESG-Score. Bitcoin/Commodities zählen nicht.")
 
+    etf_min, etf_max = st.slider(
+        "C7 · ETF gesamt [min, max]", 0.00, 1.00,
+        (DEFAULT_ETF_MIN, DEFAULT_ETF_MAX), 0.05,
+        help="Alle ETFs (Klasse=ETF) zusammen")
+
+    bond_etf_min, bond_etf_max = st.slider(
+        "C8 · Bond ETF [min, max]", 0.00, 1.00,
+        (DEFAULT_BOND_ETF_MIN, DEFAULT_BOND_ETF_MAX), 0.05,
+        help="Alle Bond ETFs zusammen")
+
+    catholic_min, catholic_max = st.slider(
+        "C9 · Catholic Index [min, max]", 0.00, 0.30,
+        (DEFAULT_CATHOLIC_MIN, DEFAULT_CATHOLIC_MAX), 0.01,
+        help="Catholic Values Index (einzelnes Asset)")
+
     if esg_avg_min > 0:
-        esg_vals = [(META_DF.loc[a,"esg_score"])
+        esg_vals = [META_DF.loc[a,"esg_score"]
                     for a in sel_assets
                     if a in META_DF.index and META_DF.loc[a,"esg_score"] is not None]
         if esg_vals:
@@ -573,15 +721,28 @@ if run_btn or "opt_res" not in st.session_state:
         st.session_state["opt_res"] = run_opt(
             tuple(sel_assets), lookback_months, lam,
             min_w, max_w, test_pct,
-            crypto_max, single_stock_max, stocks_total_max,
-            sector_max, region_max, esg_avg_min,
+            crypto_min, crypto_max,
+            single_stock_max,
+            stocks_min, stocks_max,
+            sector_min, sector_max,
+            region_min, region_max,
+            etf_min, etf_max,
+            bond_etf_min, bond_etf_max,
+            catholic_min, catholic_max,
+            esg_avg_min,
         )
         st.session_state["opt_params"] = dict(
             lookback_months=lookback_months, lam=lam, test_pct=test_pct,
             min_w=min_w, max_w=max_w,
-            crypto_max=crypto_max, single_stock_max=single_stock_max,
-            stocks_total_max=stocks_total_max,
-            sector_max=sector_max, region_max=region_max, esg_avg_min=esg_avg_min,
+            crypto_min=crypto_min, crypto_max=crypto_max,
+            single_stock_max=single_stock_max,
+            stocks_min=stocks_min, stocks_max=stocks_max,
+            sector_min=sector_min, sector_max=sector_max,
+            region_min=region_min, region_max=region_max,
+            etf_min=etf_min, etf_max=etf_max,
+            bond_etf_min=bond_etf_min, bond_etf_max=bond_etf_max,
+            catholic_min=catholic_min, catholic_max=catholic_max,
+            esg_avg_min=esg_avg_min,
         )
     except Exception as e:
         st.error(f"Optimierung fehlgeschlagen: {e}"); st.stop()
@@ -609,12 +770,15 @@ if viols:
 # HEADER
 # ─────────────────────────────────────────────
 chips = []
-if crypto_max       < 1.0: chips.append(f'<span class="chip-warn">Crypto ≤ {crypto_max:.0%}</span>')
-if single_stock_max < 1.0: chips.append(f'<span class="chip-warn">Aktie ≤ {single_stock_max:.0%}</span>')
-if stocks_total_max < 1.0: chips.append(f'<span class="chip-warn">Stocks ≤ {stocks_total_max:.0%}</span>')
-if sector_max       < 1.0: chips.append(f'<span class="chip-warn">Branche ≤ {sector_max:.0%}</span>')
-if region_max       < 1.0: chips.append(f'<span class="chip-warn">Region ≤ {region_max:.0%}</span>')
-if esg_avg_min      > 0:   chips.append(f'<span class="chip-green">Ø-ESG ≥ {esg_avg_min:.1f}</span>')
+if crypto_max        < 1.0: chips.append(f'<span class="chip-warn">Crypto {crypto_min:.0%}–{crypto_max:.0%}</span>')
+if single_stock_max  < 1.0: chips.append(f'<span class="chip-warn">Aktie ≤ {single_stock_max:.0%}</span>')
+if stocks_max        < 1.0: chips.append(f'<span class="chip-warn">Stocks {stocks_min:.0%}–{stocks_max:.0%}</span>')
+if sector_max        < 1.0: chips.append(f'<span class="chip-warn">Sektor {sector_min:.0%}–{sector_max:.0%}</span>')
+if region_max        < 1.0: chips.append(f'<span class="chip-warn">Region {region_min:.0%}–{region_max:.0%}</span>')
+if esg_avg_min       > 0:   chips.append(f'<span class="chip-green">Ø-ESG ≥ {esg_avg_min:.1f}</span>')
+if etf_max           < 1.0: chips.append(f'<span class="chip-warn">ETF {etf_min:.0%}–{etf_max:.0%}</span>')
+if bond_etf_max      < 1.0: chips.append(f'<span class="chip-warn">BondETF {bond_etf_min:.0%}–{bond_etf_max:.0%}</span>')
+if catholic_max      < 0.30:chips.append(f'<span class="chip-warn">Catholic {catholic_min:.0%}–{catholic_max:.0%}</span>')
 
 st.markdown(f"""
 <div style="padding:.6rem 0 .4rem;">
@@ -742,19 +906,25 @@ with tab2:
             rows.append({"Constraint":"C2 Max Aktie", "Wert": f"{max(w[j] for j in si):.2%}",
                          "Limit": f"≤ {single_stock_max:.0%}",
                          "OK": "✅" if max(w[j] for j in si) <= single_stock_max+1e-4 else "❌"})
-            rows.append({"Constraint":"C3 Stocks Σ", "Wert": f"{sum(w[j] for j in si):.2%}",
-                         "Limit": f"≤ {stocks_total_max:.0%}",
-                         "OK": "✅" if sum(w[j] for j in si) <= stocks_total_max+1e-4 else "❌"})
+            sv = sum(w[j] for j in si)
+            rows.append({"Constraint":"C3 Stocks Σ", "Wert": f"{sv:.2%}",
+                         "Limit": f"{stocks_min:.0%}–{stocks_max:.0%}",
+                         "OK": "✅" if stocks_min-1e-4 <= sv <= stocks_max+1e-4 else "❌"})
         max_sec = max(by_sec.items(), key=lambda x: sum(w[j] for j in x[1]))
+        sv = sum(w[j] for j in max_sec[1])
         rows.append({"Constraint":f"C4 Branche ({max_sec[0][:15]})",
-                     "Wert": f"{sum(w[j] for j in max_sec[1]):.2%}",
-                     "Limit": f"≤ {sector_max:.0%}",
-                     "OK": "✅" if sum(w[j] for j in max_sec[1]) <= sector_max+1e-4 else "❌"})
-        max_reg = max(by_reg.items(), key=lambda x: sum(w[j] for j in x[1]))
-        rows.append({"Constraint":f"C5 Region ({max_reg[0][:15]})",
-                     "Wert": f"{sum(w[j] for j in max_reg[1]):.2%}",
-                     "Limit": f"≤ {region_max:.0%}",
-                     "OK": "✅" if sum(w[j] for j in max_reg[1]) <= region_max+1e-4 else "❌"})
+                     "Wert": f"{sv:.2%}",
+                     "Limit": f"{sector_min:.0%}–{sector_max:.0%}",
+                     "OK": "✅" if sector_min-1e-4 <= sv <= sector_max+1e-4 else "❌"})
+        # C5: nur nicht-globale Regionen prüfen
+        reg_check = {r: idx for r, idx in by_reg.items() if r not in UNCONSTRAINED_REGIONS}
+        if reg_check:
+            max_reg = max(reg_check.items(), key=lambda x: sum(w[j] for j in x[1]))
+            rv = sum(w[j] for j in max_reg[1])
+            rows.append({"Constraint":f"C5 Region ({max_reg[0][:15]})",
+                         "Wert": f"{rv:.2%}",
+                         "Limit": f"{region_min:.0%}–{region_max:.0%}",
+                         "OK": "✅" if region_min-1e-4 <= rv <= region_max+1e-4 else "❌"})
         if esg_avg_min > 0 and res["esg_pairs"]:
             ep = res["esg_pairs"]
             tw = sum(w[j] for j,_ in ep)
@@ -945,8 +1115,14 @@ st.markdown(
     f'font-family:\'JetBrains Mono\',monospace;">'
     f'New Portfolio · {params["lookback_months"]} M · λ={params["lam"]:.1f} · '
     f'test={params["test_pct"]:.0%} · r_f={RF_ANNUAL:.1%} · '
-    f'Crypto≤{params["crypto_max"]:.0%} · Aktie≤{params["single_stock_max"]:.0%} · '
-    f'Stocks≤{params["stocks_total_max"]:.0%} · Branche≤{params["sector_max"]:.0%} · '
-    f'Region≤{params["region_max"]:.0%} · Ø-ESG≥{params["esg_avg_min"]:.1f}</p>',
+    f'Crypto {params["crypto_min"]:.0%}–{params["crypto_max"]:.0%} · '
+    f'Aktie≤{params["single_stock_max"]:.0%} · '
+    f'Stocks {params["stocks_min"]:.0%}–{params["stocks_max"]:.0%} · '
+    f'Sektor {params["sector_min"]:.0%}–{params["sector_max"]:.0%} · '
+    f'Region {params["region_min"]:.0%}–{params["region_max"]:.0%} · '
+    f'ETF {params["etf_min"]:.0%}–{params["etf_max"]:.0%} · '
+    f'BondETF {params["bond_etf_min"]:.0%}–{params["bond_etf_max"]:.0%} · '
+    f'Catholic {params["catholic_min"]:.0%}–{params["catholic_max"]:.0%} · '
+    f'Ø-ESG≥{params["esg_avg_min"]:.1f}</p>',
     unsafe_allow_html=True,
 )

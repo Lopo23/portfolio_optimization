@@ -22,8 +22,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data_chatgpt import load_new_portfolio
-from asset_metadaten import get_df as get_meta_df, esg_label
+from new_portfolio_loader import load_new_portfolio
+from asset_metadata import get_df as get_meta_df, esg_label
 
 
 # ─────────────────────────────────────────────

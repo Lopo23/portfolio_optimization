@@ -27,7 +27,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # scan_folder kommt direkt aus dem neuen Loader
-from data_chatgpt import scan_folder
+from new_portfolio_loader import scan_folder
 
 
 st.set_page_config(

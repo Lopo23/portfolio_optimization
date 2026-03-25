@@ -548,6 +548,18 @@ ASSET_META: dict[str, dict] = {
         "esg_score": 7.450,
         "esg_note": "EU sovereign bonds, higher ESG standards versus EM",
     },
+    "LP68380415": {
+        "name": "Amundi Euro Government Bond 5-7y.  UCITS ETF DIST",
+        "isin": "LU1287023003",
+        "asset_class": "Bond ETF", "sector": "Fixed Income – Govts", "region": "Europe",
+        "esg_score": 7.450,
+    },
+    "IBGS.L": {
+        "name": "iShares EUR Govt Bond 1-3yr UCITS ETF EUR Dist",
+        "isin": "IE00B14X4Q57",
+        "asset_class": "Bond ETF", "sector": "Fixed Income – Govts", "region": "Europe",
+        "esg_score": 7.450,
+    },
 
 
     # ── BOND ETF – Credit ────────────────────────────────────────────────────
@@ -667,10 +679,10 @@ ASSET_META: dict[str, dict] = {
     # ── INDEX ────────────────────────────────────────────────────────────────
 
     "catholic index": {
-        "name": "Catholic Values Index (internal)",
+        "name": "Catholic Values Index",
         "isin": "",
         "asset_class": "Index", "sector": "Equity – Global/EM", "region": "Global",
-        "esg_score": 3.826,
+        "esg_score": 8.578,
         "esg_note": "Explicit exclusions (weapons, abortion), high ESG standards",
     },
 

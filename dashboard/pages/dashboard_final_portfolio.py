@@ -4,13 +4,15 @@ strategic_portfolio.py  –  Strategic Portfolio Dashboard
 Ablegen: dashboard/pages/strategic_portfolio.py
 
 Feste Ziel-Allokation:
-  3 %  Cash / Money Market  (synthetisch @ 3.5 % p.a.)
+  1 %  Cash (liquid, 0 % p.a.)
+  2 %  Money Market (synthetisch @ 2 % p.a.)
   5 %  Bitcoin
   5 %  Catholic Values Index
  12 %  Gold  (PHAU LN Equity)
  40 %  Fixed Income & Fund
-        └ 82.4 % → VNGA60 IM Equity
-        └ 17.6 % → CSBGE3 IM Equity
+        └ 14.325 % → BO221256 Corp  (German Bund)
+        └ 60.175 % → IBGS.L
+        └ 25.5   % → LP68380415
  35 %  Equity (sub-weights normalised to 100 %)
         └ 35.0 % → CSPX LN Equity
         └ 16.8 % → IWVL LN Equity
@@ -51,24 +53,33 @@ _EQ_RAW = {
 }
 _EQ_SUM = sum(_EQ_RAW.values())   # 1.018 → normalise
 
-WEIGHTS: dict[str, float] = {
-    "VNGA60 IM Equity":  0.40 * 0.824,                        # 32.96 %
-    "CSBGE3 IM Equity":  0.40 * 0.176,                        #  7.04 %
+# Fixed Income sub-weights (sum = 100 %)
+_FI_BUND   = 0.14325   # German Bund
+_FI_IBGS   = 0.60175   # iShares Global Govt Bond ETF
+_FI_LP68380415 = 0.25500   # UBS Green Bond
+
+WEIGHTS = {  # sum = 0.97 (+ CASH_WEIGHT + MONEY_WEIGHT = 1.0)
+    "BO221256 Corp":    0.40 * _FI_BUND,    #  5.73 %
+    "IBGS.L":           0.40 * _FI_IBGS,    # 24.07 %
+    "LP68380415": 0.40 * _FI_LP68380415,  # 10.20 %
     **{k: 0.35 * (v / _EQ_SUM) for k, v in _EQ_RAW.items()},
-    "PHAU LN Equity":    0.12,                                 # 12.00 %
-    "bitcoin":           0.05,                                 #  5.00 %
-    "catholic index":    0.05,                                 #  5.00 %
+    "PHAU LN Equity":   0.12,               # 12.00 %
+    "bitcoin":          0.05,               #  5.00 %
+    "catholic index":   0.05,               #  5.00 %
 }
-CASH_WEIGHT   = 0.03
-CASH_YIELD_PA = 0.035
+CASH_WEIGHT        = 0.01   # liquid cash, 0 % p.a.
+MONEY_WEIGHT       = 0.02   # money market, synthetic
+CASH_YIELD_PA      = 0.00   # liquid cash yield
+MONEY_MARKET_PA    = 0.02   # money market yield
 
 # Assets without meaningful ESG scores (excluded from weighted avg ESG)
-NO_ESG_ASSETS = {"_CASH", "bitcoin", "PHAU LN Equity",
-                 "PHAG IM Equity", "PHPT LN Equity", "IGLN LN Equity"}
+NO_ESG_ASSETS = {"_CASH", "_MONEY_MARKET", "bitcoin", "PHAU LN Equity",
+                 "PHAG IM Equity", "PHPT LN Equity", "IGLN LN Equity", "BO221256 Corp"}
 
 BUCKET_MAP = {
-    "VNGA60 IM Equity": "Fixed Income & Fund",
-    "CSBGE3 IM Equity": "Fixed Income & Fund",
+    "BO221256 Corp":    "Fixed Income",
+    "IBGS.L":           "Fixed Income",
+    "LP68380415": "Fixed Income",
     "CSPX LN Equity":   "Equity",
     "IWVL LN Equity":   "Equity",
     "7203 JT Equity":   "Equity",
@@ -78,15 +89,16 @@ BUCKET_MAP = {
     "AAPL US Equity":   "Equity",
     "PHAU LN Equity":   "Gold",
     "bitcoin":          "Crypto",
-    "catholic index":   "Values",
+    "catholic index":   "ESG Catholic Equity",
     "_CASH":            "Cash",
+    "_MONEY_MARKET":    "Cash",
 }
 BUCKET_COLORS = {
-    "Fixed Income & Fund": "#2563EB",
+    "Fixed Income": "#2563EB",
     "Equity":              "#10B981",
     "Gold":                "#F59E0B",
     "Crypto":              "#EF4444",
-    "Values":              "#8B5CF6",
+    "ESG Catholic Equity":              "#8B5CF6",
     "Cash":                "#94A3B8",
 }
 
@@ -104,8 +116,13 @@ COLORS = ["#2563EB","#10B981","#F59E0B","#EF4444","#8B5CF6",
           "#A78BFA","#FB923C","#34D399","#60A5FA","#FBBF24"]
 
 ESG_BAND_COLORS = {
-    "Severe": "#EF4444", "High": "#F59E0B",
-    "Medium": "#FBBF24", "Low":  "#84CC16", "Negligible": "#10B981",
+    "CCC": "#EF4444",
+    "B":   "#F59E0B",
+    "BB":  "#FBBF24",
+    "BBB": "#84CC16",
+    "A":   "#22C55E",
+    "AA":  "#10B981",
+    "AAA": "#059669",
 }
 
 
@@ -255,8 +272,10 @@ PM = PM_ALL[PRICE_TICKERS].copy()
 @st.cache_data(show_spinner="Computing returns …")
 def build_returns():
     ret = _override_bund(PM.pct_change().dropna(how="all"))
-    # Synthetic cash: constant monthly return
-    ret["_CASH"] = (1 + CASH_YIELD_PA) ** (1/MONTHS_PER_YEAR) - 1
+    # Liquid cash: 0 % p.a.
+    ret["_CASH"] = 0.0
+    # Money market: synthetic @ 2 % p.a.
+    ret["_MONEY_MARKET"] = (1 + MONEY_MARKET_PA) ** (1/MONTHS_PER_YEAR) - 1
     # Zero-return proxy only for tickers with no price data
     for t in PROXY_TICKERS:
         ret[t] = 0.0
@@ -270,8 +289,8 @@ RETURNS = build_returns()
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner="Computing portfolio …")
 def build_portfolio():
-    all_a = list(WEIGHTS.keys()) + ["_CASH"]
-    all_w = list(WEIGHTS.values()) + [CASH_WEIGHT]
+    all_a = list(WEIGHTS.keys()) + ["_CASH", "_MONEY_MARKET"]
+    all_w = list(WEIGHTS.values()) + [CASH_WEIGHT, MONEY_WEIGHT]
     w_s   = pd.Series(dict(zip(all_a, all_w)))
     cols  = [c for c in RETURNS.columns if c in w_s.index]
     w_al  = w_s[cols]; w_al = w_al / w_al.sum()
@@ -314,7 +333,7 @@ ASSET_M = {a: metrics(RETURNS[a].dropna()) for a in PORT["cols"]}
 # ─────────────────────────────────────────────
 def build_esg_contrib():
     contrib = []
-    for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT)]:
+    for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT), ("_MONEY_MARKET", MONEY_WEIGHT)]:
         if a in NO_ESG_ASSETS:
             continue
         s = ameta(a).get("esg_score", None)
@@ -378,7 +397,7 @@ st.markdown(f"""
     {len(WEIGHTS)+1} instruments &nbsp;·&nbsp;
     {RETURNS.index[0].strftime("%b %Y")} – {RETURNS.index[-1].strftime("%b %Y")} &nbsp;·&nbsp;
     {PORT_M["n_months"]} months &nbsp;·&nbsp; r_f = {RF_ANNUAL:.1%} &nbsp;·&nbsp;
-    Cash = {CASH_YIELD_PA:.1%} p.a.
+    Cash 0% · MM {MONEY_MARKET_PA:.1%} p.a.
   </p>
 </div>
 """, unsafe_allow_html=True)
@@ -391,7 +410,7 @@ st.markdown("---")
 st.markdown('<span class="chip">Allocation by Bucket</span>', unsafe_allow_html=True)
 
 bucket_totals: dict[str, float] = {}
-for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT)]:
+for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT), ("_MONEY_MARKET", MONEY_WEIGHT)]:
     b = BUCKET_MAP[a]
     bucket_totals[b] = bucket_totals.get(b, 0.) + w
 
@@ -432,7 +451,7 @@ r2b[2].metric("Total Return (%)",      f"{PORT_M['total_return']*100:.1f}")
 r2b[3].metric("Avg ESG Score",
               f"{ESG_AVG:.2f} ({esg_label(ESG_AVG)})" if ESG_AVG else "–",
               help=f"Weighted avg over scored sub-portfolio ({_ESG_TW*100:.0f}% of total).\n"
-                   "Gold, Bitcoin and Cash are excluded (no issuer-level score).")
+                   "Gold, Bitcoin, German Bond and Cash are excluded (no issuer-level score).")
 
 st.markdown("---")
 
@@ -486,7 +505,7 @@ with tab1:
                 unsafe_allow_html=True)
     f = mfig("Cumulative Return per Bucket (weighted)", h=440)
     bucket_rets: dict[str, pd.Series] = {}
-    for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT)]:
+    for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT), ("_MONEY_MARKET", MONEY_WEIGHT)]:
         if a not in RETURNS.columns:
             continue
         b  = BUCKET_MAP[a]
@@ -552,11 +571,11 @@ with tab2:
                 unsafe_allow_html=True)
     d1, d2, d3 = st.columns(3)
 
-    all_labels  = [ameta(a).get("name", a)[:30] if a != "_CASH" else "Cash / Money Market"
-                   for a in list(WEIGHTS.keys()) + ["_CASH"]]
-    all_weights = list(WEIGHTS.values()) + [CASH_WEIGHT]
+    all_labels  = [ameta(a).get("name", a)[:30] if a not in ("_CASH","_MONEY_MARKET") else ("Liquid Cash" if a=="_CASH" else "Money Market")
+                   for a in list(WEIGHTS.keys()) + ["_CASH", "_MONEY_MARKET"]]
+    all_weights = list(WEIGHTS.values()) + [CASH_WEIGHT, MONEY_WEIGHT]
     all_colors  = [BUCKET_COLORS[BUCKET_MAP.get(a,"Cash")]
-                   for a in list(WEIGHTS.keys()) + ["_CASH"]]
+                   for a in list(WEIGHTS.keys()) + ["_CASH", "_MONEY_MARKET"]]
 
     with d1:
         f = go.Figure(go.Pie(
@@ -582,8 +601,8 @@ with tab2:
 
     with d3:
         reg_w: dict[str, float] = {}
-        for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT)]:
-            r = "Cash" if a == "_CASH" else ameta(a).get("region","–")
+        for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT), ("_MONEY_MARKET", MONEY_WEIGHT)]:
+            r = "Cash" if a in ("_CASH","_MONEY_MARKET") else ameta(a).get("region","–")
             reg_w[r] = reg_w.get(r, 0.) + w
         rl = list(reg_w.keys()); rv = list(reg_w.values())
         f = go.Figure(go.Pie(
@@ -598,8 +617,8 @@ with tab2:
     # ── 2b: Sector bar ────────────────────────
     st.markdown('<span class="chip">Sector Breakdown</span>', unsafe_allow_html=True)
     sec_w: dict[str, float] = {}
-    for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT)]:
-        s = "Cash" if a == "_CASH" else ameta(a).get("sektor","–")
+    for a, w in list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT), ("_MONEY_MARKET", MONEY_WEIGHT)]:
+        s = "Cash" if a in ("_CASH","_MONEY_MARKET") else ameta(a).get("sektor","–")
         sec_w[s] = sec_w.get(s, 0.) + w
     sec_df = pd.DataFrame({"Sector": list(sec_w), "Weight": list(sec_w.values())})
     sec_df = sec_df.sort_values("Weight", ascending=True)
@@ -622,16 +641,19 @@ with tab2:
     # ── 2c: Detail table ──────────────────────
     st.markdown('<span class="chip">Position Detail</span>', unsafe_allow_html=True)
     rows = []
-    for a, w in sorted(list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT)],
+    for a, w in sorted(list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT), ("_MONEY_MARKET", MONEY_WEIGHT)],
                        key=lambda x: -x[1]):
-        m = ameta(a) if a != "_CASH" else {}
+        m = ameta(a) if a not in ("_CASH","_MONEY_MARKET") else {}
         rows.append({
-            "Ticker":  a if a != "_CASH" else "CASH",
-            "Name":    m.get("name","Cash / Money Market")[:48],
+            "Ticker":  (a if a not in ("_CASH","_MONEY_MARKET")
+                        else ("CASH" if a == "_CASH" else "MM")),
+            "Name":    ("Liquid Cash (0% p.a.)" if a == "_CASH" else
+                        "Money Market (2% p.a.)" if a == "_MONEY_MARKET" else
+                        m.get("name","–")[:48]),
             "ISIN":    m.get("isin","–") or "–",
             "Bucket":  BUCKET_MAP.get(a,"–"),
-            "Sector":  m.get("sektor","Cash") if a != "_CASH" else "Cash",
-            "Region":  m.get("region","–")   if a != "_CASH" else "–",
+            "Sector":  m.get("sektor","Cash") if a not in ("_CASH","_MONEY_MARKET") else "Cash",
+            "Region":  m.get("region","–")   if a not in ("_CASH","_MONEY_MARKET") else "–",
             "Weight":  f"{w:.2%}",
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True,
@@ -869,7 +891,7 @@ with tab5:
                  padding:2rem 2rem;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.07);">
               <div style="font-size:.62rem;letter-spacing:.12em;text-transform:uppercase;
                           color:#64748B;font-family:'JetBrains Mono',monospace;margin-bottom:.6rem;">
-                Weighted Avg ESG Risk Score
+                Weighted Avg ESG Score
               </div>
               <div style="font-size:3.2rem;font-weight:800;color:{clr_avg};
                           line-height:1;">{ESG_AVG:.2f}</div>
@@ -877,7 +899,7 @@ with tab5:
                           margin:.3rem 0;">{lbl_avg}</div>
               <hr style="border-color:#E2E8F0;margin:.8rem 0;">
               <div style="font-size:.72rem;color:#94A3B8;line-height:1.6;">
-                Sustainalytics scale · lower = better<br>
+                Bloomberg/LSEG scale · higher = better<br>
                 Scored sub-portfolio: <strong style="color:#475569;">
                   {_ESG_TW*100:.0f}%</strong> of total<br>
                 <em>Gold, Bitcoin &amp; Cash excluded</em>
@@ -886,12 +908,12 @@ with tab5:
 
         with c2:
             # Bar chart: normalised weights within scored sub-portfolio
-            scored_sorted = sorted(ESG_CONTRIB, key=lambda x: x[2])
+            scored_sorted = sorted(ESG_CONTRIB, key=lambda x: x[2], reverse=True)
             norm_w = [w / _ESG_TW for _, w, _ in scored_sorted]
             bar_c  = [ESG_BAND_COLORS.get(esg_label(s),"#94A3B8") for _,_,s in scored_sorted]
-            f = mfig("ESG Risk Score per Asset  (bar = score, label = normalised weight within scored portfolio)",
+            f = mfig("ESG Score per Asset  (bar = score, label = normalised weight within scored portfolio)",
                      h=max(320, len(scored_sorted) * 34),
-                     extra=dict(xaxis_title="ESG Risk Score (Sustainalytics, lower = better)",
+                     extra=dict(xaxis_title="ESG Score (higher = better)",
                                 yaxis_title=""))
             f.add_trace(go.Bar(
                 y=[a for a,_,_ in scored_sorted],
@@ -910,15 +932,21 @@ with tab5:
                         annotation_position="bottom right",
                         annotation_font=dict(color="#2563EB", size=11))
             # Sustainalytics band lines
-            for xv, lt, lc in [(4.5,"Low","#84CC16"),
-                                (5.5,"Medium","#FBBF24"),
-                                (6.5,"High","#F59E0B"),
-                                (7.5,"Severe","#EF4444")]:
-                f.add_vline(x=xv,
-                            line=dict(color=lc, width=1, dash="dash"),
-                            annotation_text=lt,
-                            annotation_position="top",
-                            annotation_font=dict(color=lc, size=10))
+            for xv, lt, lc in [
+                (2.5, "B", "#F59E0B"),
+                (3.5, "BB", "#FBBF24"),
+                (4.5, "BBB", "#84CC16"),
+                (5.5, "A", "#22C55E"),
+                (6.5, "AA", "#10B981"),
+                (7.5, "AAA", "#059669"),
+            ]:
+                f.add_vline(
+                    x=xv,
+                    line=dict(color=lc, width=1, dash="dash"),
+                    annotation_text=lt,
+                    annotation_position="top",
+                    annotation_font=dict(color=lc, size=10)
+                )
             st.plotly_chart(f, use_container_width=True)
 
     st.markdown("---")
@@ -927,11 +955,12 @@ with tab5:
     st.markdown('<span class="chip">ESG Detail Table – All Positions</span>',
                 unsafe_allow_html=True)
     esg_rows = []
-    for a, w in sorted(list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT)],
+    for a, w in sorted(list(WEIGHTS.items()) + [("_CASH", CASH_WEIGHT), ("_MONEY_MARKET", MONEY_WEIGHT)],
                        key=lambda x: -x[1]):
-        if a == "_CASH":
+        if a in ("_CASH", "_MONEY_MARKET"):
             esg_rows.append({
-                "Ticker": "CASH", "Name": "Cash / Money Market",
+                "Ticker": "CASH" if a == "_CASH" else "MM",
+                "Name": "Liquid Cash (0% p.a.)" if a == "_CASH" else "Money Market (2% p.a.)",
                 "Bucket": "Cash", "Weight": f"{w:.2%}",
                 "ESG Score": "–", "ESG Label": "–",
                 "Scored Weight": "–",
@@ -949,7 +978,6 @@ with tab5:
             "ESG Score":      f"{s:.2f}" if s is not None else "n/a",
             "ESG Label":      esg_label(s) if s is not None else "n/a",
             "Scored Weight":  f"{scored_w:.1f}%" if scored_w else "excluded",
-            "Note":           m.get("esg_note","")[:60],
         })
     st.dataframe(pd.DataFrame(esg_rows), use_container_width=True,
                  hide_index=True, height=520)
@@ -964,7 +992,7 @@ st.markdown(
     f'font-family:\'JetBrains Mono\',monospace;">'
     f'Strategic Portfolio · Fixed Weights · Monthly Returns · '
     f'{RETURNS.index[0].strftime("%b %Y")} – {RETURNS.index[-1].strftime("%b %Y")} · '
-    f'r_f = {RF_ANNUAL:.1%} · Cash = {CASH_YIELD_PA:.1%} p.a. · '
+    f'r_f = {RF_ANNUAL:.1%} · Cash 0% · MM {MONEY_MARKET_PA:.1%} p.a. · '
     f'ESG avg over {_ESG_TW*100:.0f}% scored sub-portfolio · '
     f'Bitcoin: {"real data" if "bitcoin" not in PROXY_TICKERS else "zero-return proxy"} · '
     f'Catholic Index: {"real data" if "catholic index" not in PROXY_TICKERS else "zero-return proxy"}</p>',

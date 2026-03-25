@@ -85,7 +85,7 @@ def _load_raw(data_dir):  # (Path) -> Dict[str, pd.DataFrame]
 # ─────────────────────────────────────────────
 # TÄGLICHE → MONATLICHE PREISE
 # ─────────────────────────────────────────────
-def _to_monthly(prices_daily: pd.DataFrame) -> pd.DataFrame:
+def _to_monthly(prices_daily):  # (pd.DataFrame) -> pd.DataFrame
     """
     Resamplet tägliche Kurse auf den letzten Handelstag je Monat (MS = month-end).
     """
@@ -95,7 +95,7 @@ def _to_monthly(prices_daily: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────────
 # KENNZAHLEN  (monatliche Renditen als Input)
 # ─────────────────────────────────────────────
-def _metrics(r: pd.Series) -> dict:
+def _metrics(r):  # (pd.Series) -> dict
     """
     r: monatliche Renditen
     Annualisierung: Rendite × 12, Volatilität × √12

@@ -1,56 +1,38 @@
 """
 new_portfolio_loader.py
 =======================
-Liest alle Preisdaten aus data/New Portfolio (inkl. Unterordner) ein
-und harmonisiert ALLE Assets auf MONATSDATEN.
+Liest alle Preisdaten aus data/New Portfolio (Unterordner) ein.
+Unterstützte Formate: .xlsx (Bloomberg & Simple), .json (f5/crypto), .csv
 
-Unterstützte Formate:
-    - .xlsx  (Bloomberg & Simple)
-    - .json  (f5 / Crypto / allgemeine Preiszeitreihen)
-    - .csv   (auto-sep, auto-Spalten)
-
-Grundprinzip:
-    - Rohdaten dürfen täglich, wöchentlich oder monatlich sein
-    - Für die Analyse werden ALLE Reihen auf Monatsultimo resampled
-    - Danach wird der gemeinsame Zeitraum über alle Assets bestimmt
-    - Renditen und Kennzahlen basieren ausschließlich auf Monatsdaten
+Format-Erkennung:
+    .json  → slug > name > Dateiname  (crypto: "slug":"bitcoin" statt "name":"hist-data")
+    .csv   → auto-sep, auto-Spalten
+    .xlsx  → Bloomberg (Security-Header) oder Simple (date|close)
 
 Verwendung:
     from new_portfolio_loader import load_new_portfolio
     data = load_new_portfolio()
 
-Benötigte Pakete:
-    pip install pandas numpy openpyxl
+Pakete: pip install pandas numpy openpyxl
 """
-
-from __future__ import annotations  # Python 3.9: aktiviert moderne Type-Hint-Syntax
 
 import json
 import warnings
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
-
-warnings.filterwarnings("ignore")
-
+from pathlib import Path
 
 # ═════════════════════════════════════════════
 # KONFIGURATION
 # ═════════════════════════════════════════════
 
-# Optional: wenn gesetzt, wird der Start NICHT früher als dieses Datum erlaubt.
-# Für rein datengetriebenen Start einfach auf None lassen.
-MIN_START_DATE: Optional[str] = None   # z. B. "2021-03-31"
-
-# Optional: Analyseende hart begrenzen; sonst automatisch gemeinsames Ende
-MAX_END_DATE: Optional[str] = None
-
+START_DATE     = "2021-03-19"
 MONTHS_PER_YEAR = 12
 
 # Optionale manuelle Metadaten – werden mit Scan-Daten gemergt
-MANUAL_META: Dict[str, Dict] = {
+MANUAL_META = {  # type: Dict[str, dict]
     # "bitcoin": {"display_name": "Bitcoin", "region": "Global"},
 }
 
@@ -59,7 +41,7 @@ MANUAL_META: Dict[str, Dict] = {
 # READER: Bloomberg Excel
 # ═════════════════════════════════════════════
 
-def read_bloomberg_excel(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
+def read_bloomberg_excel(filepath, name=None):  # (Path, str) -> Tuple[str, pd.DataFrame]
     """
     Bloomberg-Format:
         Zeile 1:  Security | <name>
@@ -67,42 +49,34 @@ def read_bloomberg_excel(filepath: Path, name: Optional[str] = None) -> Tuple[st
         Zeile 7:  Header (Date | PX_MID | PX_BID)
         Zeile 8+: Daten
     """
-    meta = pd.read_excel(filepath, header=None, nrows=5, usecols=[0, 1])
+    meta     = pd.read_excel(filepath, header=None, nrows=5, usecols=[0, 1])
     security = name or str(meta.iloc[0, 1]).strip()
 
     df = pd.read_excel(filepath, skiprows=6, usecols=[0, 1, 2], parse_dates=[0])
     df.columns = ["Date", "PX_MID", "PX_BID"]
-
-    df = (
-        df.dropna(subset=["Date"])
-          .assign(Date=lambda x: pd.to_datetime(x["Date"], errors="coerce").dt.normalize())
+    df = (df
+          .dropna(subset=["Date"])
+          .assign(Date=lambda x: pd.to_datetime(x["Date"]).dt.normalize())
           .sort_values("Date")
-          .reset_index(drop=True)
-    )
-
+          .reset_index(drop=True))
     df["PX_MID"] = pd.to_numeric(df["PX_MID"], errors="coerce")
     df["PX_BID"] = pd.to_numeric(df["PX_BID"], errors="coerce")
-
-    df = df[["Date", "PX_MID"]].dropna(subset=["Date", "PX_MID"]).reset_index(drop=True)
     return security, df
 
 
 # ═════════════════════════════════════════════
-# READER: Simple Excel
+# READER: Simple Excel (Catholic Index etc.)
 # ═════════════════════════════════════════════
 
-def read_simple_excel(
-    filepath: Path,
-    name: Optional[str] = None,
-    header_row: int = 2,
-    date_col: str = "date",
-    price_col: str = "close",
-) -> Tuple[str, pd.DataFrame]:
+def read_simple_excel(filepath: Path, name: str = None,
+                       header_row: int = 2,
+                       date_col: str = "date",
+                       price_col="close"):  # str -> Tuple[str, pd.DataFrame]
     """
     Einfaches Excel-Format:
         Zeile 1–2: leer / Metadaten
         Zeile 3:   Header → date | close
-        Zeile 4+:  Daten  → 20/3/2026 | 1955,19
+        Zeile 4+:  Daten  → 20/3/2026 | 1955,19  (europäisches Dezimalformat OK)
     """
     security = name or filepath.stem
 
@@ -116,110 +90,92 @@ def read_simple_excel(
 
     price_raw = df[price_col]
     if price_raw.dtype == object:
-        price_raw = (
-            price_raw.astype(str)
+        price_raw = (price_raw.astype(str)
                      .str.replace(".", "", regex=False)
-                     .str.replace(",", ".", regex=False)
-        )
+                     .str.replace(",", ".", regex=False))
 
-    df["Date"] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
+    df["Date"]   = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
     df["PX_MID"] = pd.to_numeric(price_raw, errors="coerce")
 
-    df = (
-        df[["Date", "PX_MID"]]
-        .dropna(subset=["Date", "PX_MID"])
-        .assign(Date=lambda x: x["Date"].dt.normalize())
-        .sort_values("Date")
-        .drop_duplicates(subset=["Date"], keep="last")
-        .reset_index(drop=True)
-    )
-
+    df = (df[["Date", "PX_MID"]]
+          .dropna(subset=["Date", "PX_MID"])
+          .assign(Date=lambda x: x["Date"].dt.normalize())
+          .sort_values("Date")
+          .reset_index(drop=True))
     return security, df
 
 
 # ═════════════════════════════════════════════
-# READER: JSON
+# READER: JSON  (f5-Fonds & Crypto)
 # ═════════════════════════════════════════════
 
-def read_json_fund(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
+def read_json_fund(filepath, name=None):  # (Path, str) -> Tuple[str, pd.DataFrame]
     """
-    JSON-Format:
+    JSON-Format (f5-Fonds & Crypto CMC):
         {
-          "slug":   "bitcoin",
-          "name":   "hist-data",
+          "slug":   "bitcoin",          ← wird als Security-Name bevorzugt
+          "name":   "hist-data",        ← oft generisch, daher zweite Wahl
           "values": [{"date": "...", "close": ...}, ...]
         }
 
-    Security-Name Priorität:
-        explizit > slug > symbol > name > Dateiname
-
-    Daten-Array:
-        values > data > prices > history > records > ohlcv > direktes Array
+    Security-Name Priorität: explizit > slug > name > symbol > Dateiname
+    Daten-Array:  values > data > prices > history > records > ohlcv > direktes Array
     """
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     if isinstance(data, dict):
-        security = (
-            name
-            or data.get("slug")
-            or data.get("symbol")
-            or data.get("name")
-            or filepath.stem
-        )
+        # slug zuerst – bei Crypto-JSONs ist "name" oft generisch ("hist-data")
+        security = (name
+                    or data.get("slug")
+                    or data.get("symbol")
+                    or data.get("name")
+                    or filepath.stem)
 
+        # Daten-Array suchen
         values = None
         for key in ("values", "data", "prices", "history", "records", "ohlcv"):
             if key in data and isinstance(data[key], list) and len(data[key]) > 0:
                 values = data[key]
                 break
-
         if values is None:
             raise ValueError(f"Kein Daten-Array in: {filepath.name}. Keys: {list(data.keys())}")
 
     elif isinstance(data, list):
         security = name or filepath.stem
-        values = data
+        values   = data
     else:
         raise ValueError(f"Unbekannte JSON-Struktur: {filepath.name}")
 
     df = pd.DataFrame(values)
-    if df.empty:
-        raise ValueError(f"Leeres Daten-Array in: {filepath.name}")
-
     df.columns = [str(c).strip().lower() for c in df.columns]
 
+    # Datumsspalte
     date_col = next(
         (c for c in df.columns if c in ("date", "datetime", "timestamp", "time")),
         df.columns[0]
     )
-
+    # Preisspalte
     price_col = next(
         (c for c in df.columns if c in ("close", "price", "last", "value", "adj_close")),
         None
     )
-
     if price_col is None:
-        num_cols = [
-            c for c in df.columns
-            if c != date_col and pd.to_numeric(df[c], errors="coerce").notna().sum() > 0
-        ]
+        num_cols = [c for c in df.columns if c != date_col
+                    and pd.to_numeric(df[c], errors="coerce").notna().sum() > 0]
         if not num_cols:
             raise ValueError(f"Keine Preisspalte in: {filepath.name}. Spalten: {list(df.columns)}")
         price_col = num_cols[0]
 
-    df["Date"] = pd.to_datetime(df[date_col], errors="coerce")
+    df["Date"]   = pd.to_datetime(df[date_col], errors="coerce")
     df["PX_MID"] = pd.to_numeric(df[price_col], errors="coerce")
 
-    df = (
-        df[["Date", "PX_MID"]]
-        .dropna(subset=["Date", "PX_MID"])
-        .assign(Date=lambda x: x["Date"].dt.normalize())
-        .sort_values("Date")
-        .drop_duplicates(subset=["Date"], keep="last")
-        .reset_index(drop=True)
-    )
-
+    df = (df[["Date", "PX_MID"]]
+          .dropna(subset=["Date", "PX_MID"])
+          .assign(Date=lambda x: x["Date"].dt.normalize())
+          .sort_values("Date")
+          .drop_duplicates(subset=["Date"], keep="last")
+          .reset_index(drop=True))
     return security, df
 
 
@@ -227,7 +183,7 @@ def read_json_fund(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.
 # READER: CSV
 # ═════════════════════════════════════════════
 
-def read_csv_fund(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
+def read_csv_fund(filepath, name=None):  # (Path, str) -> Tuple[str, pd.DataFrame]
     """
     CSV mit Preiszeitreihen – auto-erkennt Trennzeichen und Spalten.
     Unterstützt OHLCV (nimmt 'close') und Semikolon-Separator.
@@ -236,46 +192,35 @@ def read_csv_fund(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.D
 
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
         first_line = f.readline()
-
     sep = ";" if first_line.count(";") > first_line.count(",") else ","
 
     df = pd.read_csv(filepath, sep=sep)
-    if df.empty:
-        raise ValueError(f"Leere CSV-Datei: {filepath.name}")
-
     df.columns = [str(c).strip().lower() for c in df.columns]
 
     date_col = next(
         (c for c in df.columns if c in ("date", "datetime", "timestamp", "time", "day")),
         df.columns[0]
     )
-
     price_col = next(
         (c for c in df.columns if c in ("close", "price", "last", "adj close", "adj_close", "value")),
         None
     )
-
     if price_col is None:
-        num_cols = [
-            c for c in df.columns
-            if c != date_col and pd.to_numeric(df[c], errors="coerce").notna().sum() > 0
-        ]
+        num_cols = [c for c in df.columns if c != date_col
+                    and pd.to_numeric(df[c], errors="coerce").notna().sum() > 0]
         if not num_cols:
             raise ValueError(f"Keine Preisspalte in: {filepath.name}. Spalten: {list(df.columns)}")
         price_col = num_cols[0]
 
-    df["Date"] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+    df["Date"]   = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
     df["PX_MID"] = pd.to_numeric(df[price_col], errors="coerce")
 
-    df = (
-        df[["Date", "PX_MID"]]
-        .dropna(subset=["Date", "PX_MID"])
-        .assign(Date=lambda x: x["Date"].dt.normalize())
-        .sort_values("Date")
-        .drop_duplicates(subset=["Date"], keep="last")
-        .reset_index(drop=True)
-    )
-
+    df = (df[["Date", "PX_MID"]]
+          .dropna(subset=["Date", "PX_MID"])
+          .assign(Date=lambda x: x["Date"].dt.normalize())
+          .sort_values("Date")
+          .drop_duplicates(subset=["Date"], keep="last")
+          .reset_index(drop=True))
     return security, df
 
 
@@ -283,13 +228,62 @@ def read_csv_fund(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.D
 # FORMAT-ERKENNUNG
 # ═════════════════════════════════════════════
 
-def detect_and_read(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd.DataFrame]:
+
+# ═════════════════════════════════════════════
+# READER: LSEG / Refinitiv Zeitreihen-Export
+# ═════════════════════════════════════════════
+
+def read_lseg_excel(filepath, name=None):  # (Path, str) -> Tuple[str, pd.DataFrame]
+    """
+    LSEG / Refinitiv Workspace Zeitreihen-Export:
+
+        Zeile 1:  "Hist. Time Series – <Name>"
+        Zeile 2:  Ric: | <RIC>
+        Zeile 3:  Period: | <von> – <bis>
+        Zeile 4:  Periodicity: | Daily / Monthly
+        Zeile 5:  (leer)
+        Zeile 6:  Header → Date | Open | High | Low | Close | Yield | Bid | Ask | ...
+        Zeile 7+: Daten
+
+    Security-Name: aus Zeile 2 (Ric), z.B. "SYBC.DE".
+    Preis:  Close-Spalte (Index 4 in Standard-Export, Spalte E).
+    """
+    meta = pd.read_excel(filepath, header=None, nrows=5, usecols=[0, 1])
+
+    # Prefer RIC from row 2 col B as security name
+    ric = str(meta.iloc[1, 1]).strip() if not pd.isna(meta.iloc[1, 1]) else None
+    security = name or ric or filepath.stem
+
+    df = pd.read_excel(filepath, skiprows=5, header=0)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # Date column: first column
+    date_col = df.columns[0]
+    df["Date"] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
+
+    # Close column (required)
+    if "close" not in df.columns:
+        raise ValueError(
+            f"LSEG reader: 'close' column not found in {filepath.name}. "
+            f"Available: {list(df.columns)}"
+        )
+    df["PX_MID"] = pd.to_numeric(df["close"], errors="coerce")
+
+    df = (df[["Date", "PX_MID"]]
+          .dropna(subset=["Date", "PX_MID"])
+          .assign(Date=lambda x: x["Date"].dt.normalize())
+          .sort_values("Date")
+          .reset_index(drop=True))
+    return security, df
+
+
+def detect_and_read(filepath, name=None):  # (Path, str) -> Tuple[str, pd.DataFrame]
     """
     Erkennt das Dateiformat automatisch und wählt den passenden Reader:
 
-        .json  → read_json_fund()
+        .json  → read_json_fund()     (slug > name für Security-Name)
         .csv   → read_csv_fund()
-        .xlsx  → Bloomberg oder Simple
+        .xlsx  → Bloomberg (hat Security/Start Date Header) oder Simple (date|close)
     """
     suffix = filepath.suffix.lower()
 
@@ -299,251 +293,169 @@ def detect_and_read(filepath: Path, name: Optional[str] = None) -> Tuple[str, pd
     if suffix == ".csv":
         return read_csv_fund(filepath, name)
 
-    if suffix == ".xlsx":
-        try:
-            probe = pd.read_excel(filepath, header=None, nrows=5, usecols=[0])
-            first_col = [str(v).strip().lower() for v in probe.iloc[:, 0].fillna("")]
-            is_bloomberg = any(
-                kw in val
-                for val in first_col
-                for kw in ("security", "start date", "end date", "period", "currency")
-            )
-            return read_bloomberg_excel(filepath, name) if is_bloomberg else read_simple_excel(filepath, name)
-        except Exception:
+    # .xlsx: Bloomberg vs. LSEG vs. Simple unterscheiden
+    try:
+        probe     = pd.read_excel(filepath, header=None, nrows=6, usecols=[0, 1])
+        first_col = [str(v).strip().lower() for v in probe.iloc[:, 0].fillna("")]
+
+        # Bloomberg: has "security" / "start date" / "end date" in first 3 rows
+        is_bloomberg = any(
+            kw in val
+            for val in first_col[:3]
+            for kw in ("security", "start date", "end date")
+        )
+        if is_bloomberg:
             return read_bloomberg_excel(filepath, name)
 
-    raise ValueError(f"Nicht unterstütztes Dateiformat: {filepath.suffix}")
+        # LSEG/Refinitiv: has "ric:" or "period:" or "periodicity:" in first 5 rows
+        is_lseg = any(
+            kw in val
+            for val in first_col[:5]
+            for kw in ("ric:", "period:", "periodicity:", "hist. time series")
+        )
+        if is_lseg:
+            return read_lseg_excel(filepath, name)
 
-
-# ═════════════════════════════════════════════
-# DIAGNOSE: ROH-FREQUENZ
-# ═════════════════════════════════════════════
-
-def detect_series_spacing(df: pd.DataFrame) -> str:
-    """
-    Erkennt grob die Roh-Frequenz anhand typischer Datumsabstände.
-    Nur zu Diagnosezwecken – die Analyse wird trotzdem immer monatlich gemacht.
-    """
-    d = (
-        df["Date"]
-        .sort_values()
-        .drop_duplicates()
-        .diff()
-        .dropna()
-        .dt.days
-    )
-
-    if d.empty:
-        return "unknown"
-
-    median_gap = d.median()
-
-    if median_gap <= 3:
-        return "daily"
-    if median_gap <= 10:
-        return "weekly"
-    return "monthly_or_lower"
+        # Fallback: Simple (date | close)
+        return read_simple_excel(filepath, name)
+    except Exception:
+        return read_bloomberg_excel(filepath, name)
 
 
 # ═════════════════════════════════════════════
 # FOLDER SCAN
 # ═════════════════════════════════════════════
 
-def scan_folder(root: Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str, Dict]]:
+def scan_folder(root):  # (Path) -> Tuple[Dict[str, pd.DataFrame], Dict[str, dict]]
     """
     Durchsucht root + alle Unterordner nach .xlsx / .json / .csv.
-    Unterordnername wird als Asset-Klasse verwendet.
+    Unterordner-Name wird als Asset-Klasse verwendet.
 
     Returns:
         raw_data  – { security_name: DataFrame[Date, PX_MID] }
-        meta      – { security_name: { asset_class, file, ... } }
+        meta      – { security_name: { asset_class, file } }
     """
     files = sorted(
         list(root.rglob("*.xlsx")) +
         list(root.rglob("*.json")) +
         list(root.rglob("*.csv"))
     )
-
     if not files:
         raise FileNotFoundError(f"Keine Dateien (.xlsx/.json/.csv) in: {root}")
 
     print(f"\n📂  Scanne: {root}")
     print(f"    {len(files)} Dateien gefunden (.xlsx / .json / .csv)\n")
 
-    raw_data: Dict[str, pd.DataFrame] = {}
-    meta: Dict[str, Dict] = {}
+    raw_data = {}  # type: Dict[str, pd.DataFrame]
+    meta:     dict[str, dict]         = {}
 
     for filepath in files:
         subfolder = filepath.parent.name if filepath.parent != root else "Other"
-
         try:
             security, df = detect_and_read(filepath)
 
-            raw_data[security] = df
-            meta[security] = {
-                "asset_class": subfolder,
-                "file": filepath.name,
-                "display_name": MANUAL_META.get(security, {}).get("display_name", security),
-            }
+            # Manuelle Metadaten mergen falls vorhanden
+            if security in MANUAL_META:
+                display = MANUAL_META[security].get("display_name", security)
+            else:
+                display = security
 
+            raw_data[security] = df
+            meta[security] = {"asset_class": subfolder, "file": filepath.name}
             if security in MANUAL_META:
                 meta[security].update(MANUAL_META[security])
 
-            freq_label = detect_series_spacing(df)
-
-            print(
-                f"  ✅  [{subfolder:12s}]  "
-                f"{security:40s}  "
-                f"{len(df):>5} Datenpunkte  "
-                f"({freq_label})"
-            )
+            print(f"  ✅  [{subfolder:12s}]  {security:40s}  {len(df):>5} Datenpunkte")
 
         except Exception as e:
             print(f"  ❌  [{subfolder:12s}]  {filepath.name}: {e}")
 
     print(f"\n  → {len(raw_data)} Assets erfolgreich geladen")
-
-    if not raw_data:
-        raise ValueError("Es konnte kein Asset erfolgreich geladen werden.")
-
     return raw_data, meta
 
 
 # ═════════════════════════════════════════════
-# MONATLICHE PREISMATRIX
+# PREISMATRIX BAUEN
 # ═════════════════════════════════════════════
 
-def build_monthly_price_matrix(
-    raw_data: Dict[str, pd.DataFrame],
-    start_date: Optional[str] = MIN_START_DATE,
-    end_date: Optional[str] = MAX_END_DATE,
-) -> pd.DataFrame:
+def build_price_matrix(raw_data,
+                        start_date=START_DATE):  # -> Tuple[pd.DataFrame, pd.DataFrame]
     """
-    Harmonisiert alle Rohreihen auf Monatsultimo und bestimmt danach
-    den gemeinsamen Zeitraum über alle Assets.
-
-    Vorgehen:
-        1. Jedes Asset auf Monatsultimo resamplen (letzter verfügbarer Wert im Monat)
-        2. Alle Assets zu einer Matrix zusammenführen
-        3. Optionalen externen Start-/End-Cut anwenden
-        4. Gemeinsamen Start = spätestes erstes gültiges Monatsdatum
-        5. Gemeinsames Ende = frühestes letztes gültiges Monatsdatum
-        6. Nur vollständige Beobachtungen behalten
+    Baut tägliche und monatliche Preismatrizen.
+    Gibt Diagnose aus wenn Assets Lücken haben.
     """
-    monthly_series = {}
+    frames = {name: df.set_index("Date")["PX_MID"] for name, df in raw_data.items()}
 
-    for name, df in raw_data.items():
-        s = (
-            df[["Date", "PX_MID"]]
-            .dropna()
-            .drop_duplicates(subset=["Date"], keep="last")
-            .sort_values("Date")
-            .set_index("Date")["PX_MID"]
-            .resample("ME")
-            .last()
-        )
-        monthly_series[name] = s
+    all_prices = (pd.DataFrame(frames)
+                  .sort_index()
+                  .loc[start_date:]
+                  .ffill())
 
-    prices_monthly = pd.DataFrame(monthly_series).sort_index()
+    # Diagnose
+    missing    = all_prices.columns[all_prices.isna().all()].tolist()
+    incomplete = all_prices.columns[all_prices.isna().any()].tolist()
 
-    if start_date is not None:
-        prices_monthly = prices_monthly.loc[pd.to_datetime(start_date):]
+    if missing:
+        print(f"\n  ⚠️  Keine Daten ab {start_date} → entfernt:")
+        for m in missing:
+            print(f"       – {m}")
+    if incomplete:
+        print(f"\n  ℹ️  Frühe Lücken (ffill angewendet):")
+        for m in incomplete:
+            first = all_prices[m].first_valid_index()
+            print(f"       – {m}  (ab {first.date() if first else 'n/a'})")
 
-    if end_date is not None:
-        prices_monthly = prices_monthly.loc[:pd.to_datetime(end_date)]
+    prices_daily = all_prices.dropna(axis=1, how="all").dropna(axis=0, how="any")
 
-    first_valids = {c: prices_monthly[c].first_valid_index() for c in prices_monthly.columns}
-    last_valids = {c: prices_monthly[c].last_valid_index() for c in prices_monthly.columns}
+    # Fallback: gemeinsamen Startzeitpunkt suchen
+    if prices_daily.empty:
+        first_valids = {c: all_prices[c].first_valid_index() for c in all_prices.columns}
+        common_start = max(v for v in first_valids.values() if v is not None)
+        print(f"\n  ℹ️  Kein Zeitraum ab {start_date} → verwende {common_start.date()}")
+        prices_daily = (all_prices
+                        .loc[common_start:]
+                        .dropna(axis=1, how="all")
+                        .dropna(axis=0, how="any"))
 
-    valid_starts = [v for v in first_valids.values() if v is not None]
-    valid_ends = [v for v in last_valids.values() if v is not None]
-
-    if not valid_starts or not valid_ends:
-        return pd.DataFrame()
-
-    common_start = max(valid_starts)
-    common_end = min(valid_ends)
-
-    if common_start > common_end:
-        return pd.DataFrame()
-
-    prices_monthly = prices_monthly.loc[common_start:common_end]
-
-    # Diagnose vor finalem Drop
-    missing_assets = prices_monthly.columns[prices_monthly.isna().all()].tolist()
-    partially_missing_assets = prices_monthly.columns[prices_monthly.isna().any()].tolist()
-
-    if missing_assets:
-        print("\n⚠️  Komplett fehlend im gemeinsamen Zeitraum:")
-        for asset in missing_assets:
-            print(f"    – {asset}")
-
-    if partially_missing_assets:
-        print("\nℹ️  Unvollständige Monatswerte im gemeinsamen Zeitraum:")
-        for asset in partially_missing_assets:
-            first = prices_monthly[asset].first_valid_index()
-            last = prices_monthly[asset].last_valid_index()
-            print(f"    – {asset}  (erste gültige: {first.date() if first is not None else 'n/a'}, letzte gültige: {last.date() if last is not None else 'n/a'})")
-
-    prices_monthly = (
-        prices_monthly
-        .dropna(axis=1, how="all")
-        .dropna(axis=0, how="any")
-    )
-
-    return prices_monthly
+    prices_monthly = prices_daily.resample("ME").last().dropna()
+    return prices_daily, prices_monthly
 
 
 # ═════════════════════════════════════════════
 # KENNZAHLEN
 # ═════════════════════════════════════════════
 
-def compute_metrics(returns: pd.DataFrame) -> pd.DataFrame:
-    """
-    Annualisierte Kennzahlen je Asset auf Basis MONATLICHER Renditen.
-    """
-    rows = []
+def compute_metrics(returns: pd.DataFrame, freq: str = "monthly") -> pd.DataFrame:
+    """Annualisierte Kennzahlen je Asset. freq: 'monthly' (×12) oder 'daily' (×252)."""
+    scale = 12 if freq == "monthly" else 252
+    rows  = []
 
     for col in returns.columns:
-        r = returns[col].dropna()
-
-        if r.empty:
-            continue
-
-        cum = (1 + r).cumprod()
-        total = cum.iloc[-1] - 1
-        ann_r = (1 + total) ** (MONTHS_PER_YEAR / len(r)) - 1
-        ann_v = r.std() * np.sqrt(MONTHS_PER_YEAR)
-        sharpe = (ann_r / ann_v) if ann_v > 0 else np.nan
-
-        neg = r[r < 0]
-        ds = neg.std() * np.sqrt(MONTHS_PER_YEAR) if len(neg) > 0 else np.nan
-        sortino = (ann_r / ds) if pd.notna(ds) and ds > 0 else np.nan
-
-        roll = cum.cummax()
-        max_dd = ((cum - roll) / roll).min()
-
-        tail = r[r <= r.quantile(0.05)]
-        cvar = tail.mean() if not tail.empty else np.nan
+        r       = returns[col].dropna()
+        cum     = (1 + r).cumprod()
+        total   = cum.iloc[-1] - 1
+        ann_r   = (1 + total) ** (scale / len(r)) - 1
+        ann_v   = r.std() * np.sqrt(scale)
+        sharpe  = (ann_r / ann_v) if ann_v > 0 else np.nan
+        neg     = r[r < 0]
+        ds      = neg.std() * np.sqrt(scale) if len(neg) > 0 else np.nan
+        sortino = (ann_r / ds) if ds and ds > 0 else np.nan
+        roll    = cum.cummax()
+        max_dd  = ((cum - roll) / roll).min()
+        cvar    = r[r <= r.quantile(0.05)].mean()
 
         rows.append({
-            "asset": col,
-            "ann_return": round(ann_r * 100, 2),
-            "ann_vol": round(ann_v * 100, 2),
-            "sharpe": round(sharpe, 3) if pd.notna(sharpe) else np.nan,
-            "sortino": round(sortino, 3) if pd.notna(sortino) else np.nan,
+            "asset":        col,
+            "ann_return":   round(ann_r  * 100, 2),
+            "ann_vol":      round(ann_v  * 100, 2),
+            "sharpe":       round(sharpe, 3),
+            "sortino":      round(sortino, 3),
             "max_drawdown": round(max_dd * 100, 2),
-            "cvar_95": round(cvar * 100, 2) if pd.notna(cvar) else np.nan,
-            "total_return": round(total * 100, 2),
+            "cvar_95":      round(cvar   * 100, 2),
+            "total_return": round(total  * 100, 2),
         })
 
-    if not rows:
-        return pd.DataFrame(columns=[
-            "ann_return", "ann_vol", "sharpe", "sortino",
-            "max_drawdown", "cvar_95", "total_return"
-        ])
-
-    return pd.DataFrame(rows).set_index("asset").sort_index()
+    return pd.DataFrame(rows).set_index("asset")
 
 
 # ═════════════════════════════════════════════
@@ -551,79 +463,83 @@ def compute_metrics(returns: pd.DataFrame) -> pd.DataFrame:
 # ═════════════════════════════════════════════
 
 def load_new_portfolio(
-    data_dir: Optional[Path] = None,
-    start_date: Optional[str] = MIN_START_DATE,
-    end_date: Optional[str] = MAX_END_DATE,
-) -> Dict:
+    data_dir=None,  # str or Path
+    start_date: str = START_DATE,
+    freq: str = "monthly",
+) -> dict:
     """
     Lädt alle Assets aus data/New Portfolio und gibt zurück:
 
-        prices_monthly – monatliche Preismatrix (gemeinsamer Zeitraum)
-        returns        – monatliche Renditen
-        metrics_df     – annualisierte Kennzahlen je Asset
-        asset_meta     – { security: { asset_class, file, ... } }
+        prices_daily   – tägliche Kurse (für Charts)
+        prices_monthly – monatliche Kurse (letzter Handelstag je Monat)
+        returns        – Renditen in gewählter Frequenz
+        metrics_df     – Kennzahlen je Asset
+        asset_meta     – { security: { asset_class, file } }
         asset_classes  – { asset_class: [securities] }
         start_date     – verwendetes Startdatum
-        end_date       – verwendetes Enddatum
-        freq           – immer "monthly"
+        freq           – "monthly" oder "daily"
     """
     if data_dir is None:
-        here = Path(__file__).resolve().parent
+        here     = Path(__file__).resolve().parent
         data_dir = here / "data" / "New Portfolio"
-
     data_dir = Path(data_dir)
 
-    # 1) Dateien scannen
+    # 1. Alle Dateien scannen
     raw_data, asset_meta = scan_folder(data_dir)
 
-    # 2) Monatliche konsistente Matrix
-    prices_monthly = build_monthly_price_matrix(
-        raw_data=raw_data,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    # 2. Preismatrizen
+    prices_daily, prices_monthly = build_price_matrix(raw_data, start_date)
 
-    if prices_monthly.empty:
-        raise ValueError(
-            "Kein gemeinsamer monatlicher Zeitraum über alle Assets gefunden. "
-            "Bitte Start-/Enddatum prüfen oder Assets mit zu kurzer Historie entfernen."
-        )
+    print(f"\n📅  Täglich:   {prices_daily.index[0].date()} → {prices_daily.index[-1].date()}"
+          f"  ({len(prices_daily)} Tage)")
+    print(f"📅  Monatlich: {prices_monthly.index[0].date()} → {prices_monthly.index[-1].date()}"
+          f"  ({len(prices_monthly)} Monate)")
+    print(f"📈  {len(prices_daily.columns)} Assets im gemeinsamen Zeitraum\n")
 
-    # 3) Renditen & Kennzahlen
-    returns = prices_monthly.pct_change().dropna(how="any")
-    metrics_df = compute_metrics(returns)
+    # 3. Renditen & Kennzahlen
+    prices  = prices_monthly if freq == "monthly" else prices_daily
+    returns = prices.pct_change().dropna()
 
-    # 4) Asset-Klassen-Mapping nur für tatsächlich enthaltene Assets
-    asset_classes: Dict[str, List[str]] = {}
+    # German Bund: shift return series so geometric annualised return = YTM.
+    _BUND_TICKER = "BO221256 Corp"
+    _BUND_YTM_PA = 0.03074
+    if _BUND_TICKER in returns.columns:
+        from scipy.optimize import brentq
+        _r   = returns[_BUND_TICKER].dropna()
+        _n   = len(_r)
+        _scale = 12 if freq == "monthly" else 252
+        def _geo_ann(s):
+            total = (1 + _r + s).prod() - 1
+            return (1 + total) ** (_scale / _n) - 1
+        try:
+            _s = brentq(lambda s: _geo_ann(s) - _BUND_YTM_PA, -0.20, 0.20, xtol=1e-10)
+        except ValueError:
+            _s = _BUND_YTM_PA / _scale - _r.mean()
+        returns[_BUND_TICKER] = returns[_BUND_TICKER] + _s
+
+    metrics_df = compute_metrics(returns, freq)
+
+    # 4. Asset-Klassen-Mapping
+    asset_classes = {}  # type: Dict[str, list]
     for sec, m in asset_meta.items():
-        if sec not in prices_monthly.columns:
+        if sec not in prices_daily.columns:
             continue
         cls = m.get("asset_class", "Other")
         asset_classes.setdefault(cls, []).append(sec)
 
-    # Sortierung
-    asset_classes = {k: sorted(v) for k, v in sorted(asset_classes.items())}
-
-    print(
-        f"\n📅  Monatlicher gemeinsamer Zeitraum: "
-        f"{prices_monthly.index[0].date()} → {prices_monthly.index[-1].date()}  "
-        f"({len(prices_monthly)} Monate)"
-    )
-    print(f"📈  {len(prices_monthly.columns)} Assets im gemeinsamen Zeitraum\n")
-
     print("📊  Asset-Klassen:")
-    for cls, assets in asset_classes.items():
+    for cls, assets in sorted(asset_classes.items()):
         print(f"    {cls:15s}  {len(assets):>3} Assets")
 
     return {
+        "prices_daily":   prices_daily,
         "prices_monthly": prices_monthly,
-        "returns": returns,
-        "metrics_df": metrics_df,
-        "asset_meta": asset_meta,
-        "asset_classes": asset_classes,
-        "start_date": str(prices_monthly.index[0].date()),
-        "end_date": str(prices_monthly.index[-1].date()),
-        "freq": "monthly",
+        "returns":        returns,
+        "metrics_df":     metrics_df,
+        "asset_meta":     asset_meta,
+        "asset_classes":  asset_classes,
+        "start_date":     start_date,
+        "freq":           freq,
     }
 
 
@@ -634,7 +550,7 @@ def load_new_portfolio(
 if __name__ == "__main__":
     data = load_new_portfolio()
 
-    print("\n" + "─" * 72)
-    print("KENNZAHLEN (annualisiert, auf Basis monatlicher Renditen)")
-    print("─" * 72)
+    print("\n" + "─" * 65)
+    print("KENNZAHLEN (annualisiert)")
+    print("─" * 65)
     print(data["metrics_df"].to_string())

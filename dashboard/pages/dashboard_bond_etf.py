@@ -4,7 +4,7 @@ bond_etf_optimizer.py  –  Bond ETF Portfolio Optimizer
 Ablegen: dashboard/pages/bond_etf_optimizer.py
 Starten: streamlit run dashboard/app.py
 
-Universum:  nur Bond ETFs (asset_class == "Bond ETF")
+Universum:  Bond ETFs + Funds (asset_class == "Bond ETF" or "Fund")
 Portfolios: Equal Weight · Max Utility (λ) · Min CVaR 95%
 Constraints: keine – freie Optimierung über alle Bond ETFs
 """
@@ -31,7 +31,7 @@ from asset_metadata import get_df as get_meta_df, esg_label
 # ─────────────────────────────────────────────
 # PAGE CONFIG + STYLING
 # ─────────────────────────────────────────────
-st.set_page_config(page_title="Bond ETF Optimizer", page_icon="🔵",
+st.set_page_config(page_title="Fixed Income Optimizer", page_icon="🔵",
                    layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -91,6 +91,47 @@ def _lo(title="", h=360, extra=None):
     if extra: d.update(extra)
     return d
 
+
+
+# ── German Bund YTM override ────────────────────────────────────────────
+# Applied after every pct_change() to replace mark-to-market returns
+# with the constant YTM-based monthly return (3.074 % p.a.)
+_BUND_TICKER = "BO221256 Corp"
+_BUND_YTM_PA = 0.03074
+
+def _override_bund(ret):
+    """Shift Bund return series so that the GEOMETRIC annualised return
+    equals the YTM (3.074 % p.a.) while preserving historical volatility.
+
+    Uses scipy.optimize.brentq to find the exact additive shift s such that:
+        geo_annualised(r_hist + s) = 3.074 %
+    Volatility, correlations and distribution shape are fully preserved.
+    """
+    if _BUND_TICKER not in ret.columns:
+        return ret
+    from scipy.optimize import brentq
+    ret  = ret.copy()
+    r    = ret[_BUND_TICKER].dropna()
+    n    = len(r)
+    if n < 2:
+        return ret
+
+    def _geo_ann(series):
+        total = (1 + series).prod() - 1
+        return (1 + total) ** (12 / n) - 1
+
+    def _objective(s):
+        return _geo_ann(r + s) - _BUND_YTM_PA
+
+    try:
+        s_opt = brentq(_objective, -0.20, 0.20, xtol=1e-10)
+    except ValueError:
+        # fallback: arithmetic mean-shift if brentq bracket fails
+        s_opt = _BUND_YTM_PA / 12 - r.mean()
+
+    ret[_BUND_TICKER] = ret[_BUND_TICKER] + s_opt
+    return ret
+
 def mfig(title="", h=360, extra=None):
     f = go.Figure(); f.update_layout(**_lo(title, h, extra)); return f
 
@@ -131,14 +172,14 @@ def ameta(a: str) -> dict:
         m.setdefault("asset_class", m.get("klasse","–"))
     return m
 
-# Filter: nur Bond ETFs die auch Preisdaten haben
+# Filter: Bond ETFs + Funds die auch Preisdaten haben
 BOND_ETF_UNIVERSE = [
     a for a in PM_ALL.columns
-    if ameta(a).get("asset_class","").lower() in ("bond etf", "fund")
+    if ameta(a).get("asset_class","").lower() in ("bond etf", "fund", "new bond etfs", "bond")
 ]
 
 if not BOND_ETF_UNIVERSE:
-    st.error("No Bond ETFs found in price data."); st.stop()
+    st.error("No Bond ETFs or Funds found in price data."); st.stop()
 
 A_COLORS = {a: COLORS[i % len(COLORS)] for i, a in enumerate(BOND_ETF_UNIVERSE)}
 
@@ -242,7 +283,7 @@ def eff_frontier(X, n_pts=30):
 def run_opt(assets: tuple, lookback_months: int, lam: float, test_pct: float):
     assets  = list(assets)
     prices  = PM_ALL[assets].iloc[-lookback_months:].copy()
-    returns = prices.pct_change().dropna(how="any")
+    returns = _override_bund(prices.pct_change().dropna(how="any"))
 
     if len(returns) < 12:
         raise ValueError(f"Only {len(returns)} months available – increase lookback.")
@@ -296,12 +337,12 @@ def _lbl(t):
                 f'color:#94A3B8;margin-bottom:.3rem;">{t}</p>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("## 🔵 Bond ETF Optimizer")
+    st.markdown("## 🔵 Fixed Income Optimizer")
     st.markdown('<p style="font-size:.75rem;color:#CBD5E1;margin-top:-.4rem;">'
-                "No constraints · free optimisation</p>", unsafe_allow_html=True)
+                "Bond ETF · Fund · No constraints</p>", unsafe_allow_html=True)
     st.markdown("---")
 
-    _lbl("Bond ETFs")
+    _lbl("Bond ETFs & Funds")
     # Show name + ticker in multiselect
     label_map = {a: f"{a}  –  {ameta(a).get('name','')[:35]}" for a in BOND_ETF_UNIVERSE}
     sel_labels = st.multiselect(
@@ -326,7 +367,7 @@ with st.sidebar:
 # VALIDATION
 # ─────────────────────────────────────────────
 if len(sel_assets) < 2:
-    st.warning("Please select at least 2 Bond ETFs."); st.stop()
+    st.warning("Please select at least 2 instruments."); st.stop()
 
 
 # ─────────────────────────────────────────────
@@ -356,12 +397,12 @@ for w in res.get("solver_warnings", []):
 # ─────────────────────────────────────────────
 st.markdown(f"""
 <div style="padding:.6rem 0 .4rem;">
-  <span class="chip">Bond ETF Universe · Unconstrained</span>
+  <span class="chip">Fixed Income Universe · Unconstrained</span>
   <h1 style="margin:.3rem 0 0;font-size:1.9rem;font-weight:800;color:#0F172A;">
     Bond ETF Portfolio Optimisation
   </h1>
   <p style="color:#94A3B8;font-size:.75rem;margin-top:.25rem;font-family:'JetBrains Mono',monospace;">
-    {len(res["assets"])} Bond ETFs &nbsp;·&nbsp;
+    {len(res["assets"])} instruments (Bond ETF + Fund) &nbsp;·&nbsp;
     {params["lookback_months"]} months lookback &nbsp;·&nbsp;
     {res["window_start"].strftime("%b %Y")} – {res["window_end"].strftime("%b %Y")} &nbsp;·&nbsp;
     λ = {params["lam"]:.1f} &nbsp;·&nbsp; test = {params["test_pct"]:.0%} &nbsp;·&nbsp;
@@ -426,7 +467,7 @@ with tab1:
     st.markdown('<span class="chip">Individual Bond ETF Performance</span>',
                 unsafe_allow_html=True)
 
-    f = mfig("Cumulative Returns – all Bond ETFs", h=420)
+    f = mfig("Cumulative Returns – all instruments", h=420)
     for i, a in enumerate(res["assets"]):
         r   = res["returns_all"][a].dropna()
         cum = (1+r).cumprod()
@@ -502,7 +543,7 @@ with tab2:
 # TAB 3 · EFFICIENT FRONTIER
 # ══════════════════════════════════════════════
 with tab3:
-    f = mfig("Efficient Frontier – Bond ETF Universe (unconstrained)", h=540,
+    f = mfig("Efficient Frontier – Fixed Income Universe (unconstrained)", h=540,
              extra=dict(xaxis_title="Ann. Volatility (%)", yaxis_title="Ann. Return (%)"))
 
     if res["ef_vols"]:
@@ -572,7 +613,7 @@ with tab4:
         text=corr.values.round(2), texttemplate="%{text}", textfont=dict(size=9),
         hovertemplate="%{x} / %{y}<br>ρ = %{z:.2f}<extra></extra>",
     ))
-    f.update_layout(**_lo("Correlation Matrix – Bond ETFs (monthly returns)", h=460))
+    f.update_layout(**_lo("Correlation Matrix – Bond ETF & Fund (monthly returns)", h=460))
     st.plotly_chart(f, use_container_width=True)
 
     st.markdown("---")
@@ -594,7 +635,7 @@ st.markdown("---")
 st.markdown(
     f'<p style="color:#CBD5E1;font-size:.62rem;text-align:center;'
     f'font-family:\'JetBrains Mono\',monospace;">'
-    f'Bond ETF Universe · {params["lookback_months"]} M lookback · '
+    f'Fixed Income & Fund Universe · {params["lookback_months"]} M lookback · '
     f'λ={params["lam"]:.1f} · test={params["test_pct"]:.0%} · '
     f'r_f={RF_ANNUAL:.1%} · No constraints</p>',
     unsafe_allow_html=True,

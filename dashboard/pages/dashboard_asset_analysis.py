@@ -1,10 +1,10 @@
 """
-asset_explorer.py  –  Asset Explorer
+dashboard_asset_analysis.py  –  Asset Explorer
 =====================================
 Überblick über alle Assets aus dem New Portfolio.
 Kein Optimierer – nur Visualisierung und Vergleich.
 
-Ablegen: dashboard/pages/asset_explorer.py
+Ablegen: dashboard/pages/dashboard_asset_analysis.py
 Starten: streamlit run dashboard/app.py
 """
 
@@ -78,6 +78,32 @@ COLORS = [
 MONTHS = ["Jan","Feb","Mär","Apr","Mai","Jun",
           "Jul","Aug","Sep","Okt","Nov","Dez"]
 
+# ── German Bund YTM override ────────────────────────────────────────────
+_BUND_TICKER = "BO221256 Corp"
+_BUND_YTM_PA = 0.03074
+
+def _override_bund(ret):
+    """Shift Bund return series so geometric annualised return = YTM (3.074% p.a.)
+    while preserving historical volatility. Uses brentq to find exact shift s."""
+    if _BUND_TICKER not in ret.columns:
+        return ret
+    from scipy.optimize import brentq
+    ret   = ret.copy()
+    r     = ret[_BUND_TICKER].dropna()
+    n     = len(r)
+    if n < 2:
+        return ret
+    def _geo_ann(s):
+        total = (1 + r + s).prod() - 1
+        return (1 + total) ** (12 / n) - 1
+    try:
+        s_opt = brentq(lambda s: _geo_ann(s) - _BUND_YTM_PA, -0.20, 0.20, xtol=1e-10)
+    except ValueError:
+        s_opt = _BUND_YTM_PA / 12 - r.mean()
+    ret[_BUND_TICKER] = ret[_BUND_TICKER] + s_opt
+    return ret
+
+
 def _layout(title="", h=420, extra=None):
     d = dict(
         paper_bgcolor="white", plot_bgcolor="#F8FAFC",
@@ -100,14 +126,14 @@ def make_fig(title="", h=420, extra=None):
 
 
 # ─────────────────────────────────────────────
-# DATA  (neuer Loader → nur prices_monthly)
+# DATA
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner="Lade Asset-Daten …")
 def _load():
     return load_new_portfolio(PROJECT_ROOT / "data" / "New Portfolio")
 
 data           = _load()
-PM             = data["prices_monthly"]   # monatliche Preismatrix
+PM             = data["prices_monthly"]
 asset_meta_ldr = data["asset_meta"]
 asset_classes  = data["asset_classes"]
 META_DF        = get_meta_df()
@@ -120,12 +146,7 @@ ALL_ASSETS   = sorted(PM.columns.tolist())
 ALL_CLASSES  = sorted(asset_classes.keys())
 A_COLORS     = {a: COLORS[i % len(COLORS)] for i, a in enumerate(ALL_ASSETS)}
 
-def meta(a: str) -> dict:
-    """Kombiniert Loader-Meta + asset_metadata.py.
-    Unterstützt beide Feldnamen-Konventionen:
-      - Deutsch (alt):  klasse / sektor
-      - Englisch (neu): asset_class / sector
-    """
+def meta(a):
     m = dict(asset_meta_ldr.get(a, {}))
     if a in META_DF.index:
         row = META_DF.loc[a]
@@ -158,7 +179,7 @@ PM_5y     = PM[PM.index >= start_5y]
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def calc_metrics():
-    ret  = PM_5y.pct_change().dropna()
+    ret  = _override_bund(PM_5y.pct_change().dropna())
     rows = []
     for col in ret.columns:
         r = ret[col].dropna()
@@ -374,7 +395,7 @@ with c1:
 with c2:
     avail = [a for a in sel_assets if a in PM_5y.columns]
     if len(avail) >= 2:
-        ret_sel = PM_5y[avail].pct_change().dropna()
+        ret_sel = _override_bund(PM_5y[avail].pct_change().dropna())
         corr    = ret_sel.corr()
         short   = [a[:14] for a in corr.columns]
         f4 = go.Figure(go.Heatmap(
@@ -430,7 +451,7 @@ hm_options = [a for a in sel_assets if a in PM_5y.columns]
 if hm_options:
     hm_asset = st.selectbox("Asset für Heatmap", hm_options)
 
-    r_hm  = PM_5y[hm_asset].pct_change().dropna()
+    r_hm  = _override_bund(PM_5y[[hm_asset]].pct_change().dropna())[hm_asset]
     pivot = pd.DataFrame({
         "Jahr":  r_hm.index.year,
         "Monat": r_hm.index.month,
@@ -464,6 +485,7 @@ st.markdown(
     f'font-family:\'JetBrains Mono\',monospace;">'
     f'New Portfolio · Asset Explorer · '
     f'{PM_5y.index[0].strftime("%b %Y")} – {PM_5y.index[-1].strftime("%b %Y")} · '
-    f'{len(ALL_ASSETS)} Assets total</p>',
+    f'{len(ALL_ASSETS)} Assets total · '
+    f'German Bund E(r) = 3.074% p.a. (YTM override)</p>',
     unsafe_allow_html=True,
 )

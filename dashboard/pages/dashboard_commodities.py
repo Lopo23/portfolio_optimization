@@ -91,6 +91,47 @@ def _lo(title="", h=360, extra=None):
     if extra: d.update(extra)
     return d
 
+
+
+# ── German Bund YTM override ────────────────────────────────────────────
+# Applied after every pct_change() to replace mark-to-market returns
+# with the constant YTM-based monthly return (3.074 % p.a.)
+_BUND_TICKER = "BO221256 Corp"
+_BUND_YTM_PA = 0.03074
+
+def _override_bund(ret):
+    """Shift Bund return series so that the GEOMETRIC annualised return
+    equals the YTM (3.074 % p.a.) while preserving historical volatility.
+
+    Uses scipy.optimize.brentq to find the exact additive shift s such that:
+        geo_annualised(r_hist + s) = 3.074 %
+    Volatility, correlations and distribution shape are fully preserved.
+    """
+    if _BUND_TICKER not in ret.columns:
+        return ret
+    from scipy.optimize import brentq
+    ret  = ret.copy()
+    r    = ret[_BUND_TICKER].dropna()
+    n    = len(r)
+    if n < 2:
+        return ret
+
+    def _geo_ann(series):
+        total = (1 + series).prod() - 1
+        return (1 + total) ** (12 / n) - 1
+
+    def _objective(s):
+        return _geo_ann(r + s) - _BUND_YTM_PA
+
+    try:
+        s_opt = brentq(_objective, -0.20, 0.20, xtol=1e-10)
+    except ValueError:
+        # fallback: arithmetic mean-shift if brentq bracket fails
+        s_opt = _BUND_YTM_PA / 12 - r.mean()
+
+    ret[_BUND_TICKER] = ret[_BUND_TICKER] + s_opt
+    return ret
+
 def mfig(title="", h=360, extra=None):
     f = go.Figure(); f.update_layout(**_lo(title, h, extra)); return f
 
@@ -242,7 +283,7 @@ def eff_frontier(X, n_pts=30):
 def run_opt(assets: tuple, lookback_months: int, lam: float, test_pct: float):
     assets  = list(assets)
     prices  = PM_ALL[assets].iloc[-lookback_months:].copy()
-    returns = prices.pct_change().dropna(how="any")
+    returns = _override_bund(prices.pct_change().dropna(how="any"))
 
     if len(returns) < 12:
         raise ValueError(f"Only {len(returns)} months available – increase lookback.")

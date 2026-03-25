@@ -90,7 +90,10 @@ BUCKET_COLORS = {
     "Cash":                "#94A3B8",
 }
 
-PRICE_TICKERS = [k for k in WEIGHTS if k not in ("bitcoin", "catholic index")]
+# PRICE_TICKERS: all assets that have actual price data in the loader.
+# bitcoin and catholic index are included if present in PM_ALL,
+# otherwise they fall back to zero-return proxies in build_returns().
+PRICE_TICKERS = list(WEIGHTS.keys())  # resolved after PM_ALL is loaded
 
 RF_ANNUAL       = 0.02017
 MONTHS_PER_YEAR = 12
@@ -153,6 +156,47 @@ def _lo(title="", h=420, extra=None):
         d.update(extra)
     return d
 
+
+
+# ── German Bund YTM override ────────────────────────────────────────────
+# Applied after every pct_change() to replace mark-to-market returns
+# with the constant YTM-based monthly return (3.074 % p.a.)
+_BUND_TICKER = "BO221256 Corp"
+_BUND_YTM_PA = 0.03074
+
+def _override_bund(ret):
+    """Shift Bund return series so that the GEOMETRIC annualised return
+    equals the YTM (3.074 % p.a.) while preserving historical volatility.
+
+    Uses scipy.optimize.brentq to find the exact additive shift s such that:
+        geo_annualised(r_hist + s) = 3.074 %
+    Volatility, correlations and distribution shape are fully preserved.
+    """
+    if _BUND_TICKER not in ret.columns:
+        return ret
+    from scipy.optimize import brentq
+    ret  = ret.copy()
+    r    = ret[_BUND_TICKER].dropna()
+    n    = len(r)
+    if n < 2:
+        return ret
+
+    def _geo_ann(series):
+        total = (1 + series).prod() - 1
+        return (1 + total) ** (12 / n) - 1
+
+    def _objective(s):
+        return _geo_ann(r + s) - _BUND_YTM_PA
+
+    try:
+        s_opt = brentq(_objective, -0.20, 0.20, xtol=1e-10)
+    except ValueError:
+        # fallback: arithmetic mean-shift if brentq bracket fails
+        s_opt = _BUND_YTM_PA / 12 - r.mean()
+
+    ret[_BUND_TICKER] = ret[_BUND_TICKER] + s_opt
+    return ret
+
 def mfig(title="", h=420, extra=None):
     f = go.Figure()
     f.update_layout(**_lo(title, h, extra))
@@ -192,9 +236,15 @@ def ameta(a: str) -> dict:
         m.setdefault("asset_class", m.get("klasse","–"))
     return m
 
-missing = [t for t in PRICE_TICKERS if t not in PM_ALL.columns]
-if missing:
-    st.error(f"Missing price data for: {missing}"); st.stop()
+# Resolve which tickers have actual price data
+PRICE_TICKERS = [k for k in WEIGHTS if k in PM_ALL.columns]
+PROXY_TICKERS = [k for k in WEIGHTS if k not in PM_ALL.columns]
+if PROXY_TICKERS:
+    st.info(f"No price data for {PROXY_TICKERS} → zero-return proxy used.")
+
+# Investable tickers that also have price data (for frontier / metrics)
+INVESTABLE_TICKERS = [t for t in PRICE_TICKERS
+                      if t not in ("bitcoin", "catholic index")]
 
 PM = PM_ALL[PRICE_TICKERS].copy()
 
@@ -204,10 +254,12 @@ PM = PM_ALL[PRICE_TICKERS].copy()
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner="Computing returns …")
 def build_returns():
-    ret = PM.pct_change().dropna(how="all")
-    ret["_CASH"]        = (1 + CASH_YIELD_PA) ** (1/MONTHS_PER_YEAR) - 1
-    ret["bitcoin"]        = 0.0
-    ret["catholic index"] = 0.0
+    ret = _override_bund(PM.pct_change().dropna(how="all"))
+    # Synthetic cash: constant monthly return
+    ret["_CASH"] = (1 + CASH_YIELD_PA) ** (1/MONTHS_PER_YEAR) - 1
+    # Zero-return proxy only for tickers with no price data
+    for t in PROXY_TICKERS:
+        ret[t] = 0.0
     return ret
 
 RETURNS = build_returns()
@@ -285,7 +337,7 @@ def build_frontier(n_pts: int = 40):
     Unconstrained mean-variance frontier over PRICE_TICKERS.
     Uses training set = full available history (no train/test split for display).
     """
-    X   = RETURNS[PRICE_TICKERS].dropna(how="any")
+    X   = RETURNS[INVESTABLE_TICKERS].dropna(how="any")
     mu  = X.mean().values
     cov = X.cov().values
     n   = len(mu)
@@ -666,7 +718,7 @@ with tab3:
     st.plotly_chart(f, use_container_width=True)
     st.caption(
         "The frontier is computed over investable price-data assets (long-only, "
-        "no constraints). Bitcoin and Catholic Index are excluded (zero-return proxies). "
+        "no constraints). Assets without price data are excluded; ""bitcoin and catholic index use zero-return proxies if no price series is loaded. "
         "The strategic portfolio may lie inside the frontier because it includes "
         "unoptimised fixed-weight positions (Gold, Cash, Bitcoin, Catholic Index)."
     )
@@ -825,7 +877,7 @@ with tab5:
                           margin:.3rem 0;">{lbl_avg}</div>
               <hr style="border-color:#E2E8F0;margin:.8rem 0;">
               <div style="font-size:.72rem;color:#94A3B8;line-height:1.6;">
-                Sustainalytics scale · higher = better<br>
+                Sustainalytics scale · lower = better<br>
                 Scored sub-portfolio: <strong style="color:#475569;">
                   {_ESG_TW*100:.0f}%</strong> of total<br>
                 <em>Gold, Bitcoin &amp; Cash excluded</em>
@@ -914,6 +966,7 @@ st.markdown(
     f'{RETURNS.index[0].strftime("%b %Y")} – {RETURNS.index[-1].strftime("%b %Y")} · '
     f'r_f = {RF_ANNUAL:.1%} · Cash = {CASH_YIELD_PA:.1%} p.a. · '
     f'ESG avg over {_ESG_TW*100:.0f}% scored sub-portfolio · '
-    f'Bitcoin &amp; Catholic Index: zero-return proxy</p>',
+    f'Bitcoin: {"real data" if "bitcoin" not in PROXY_TICKERS else "zero-return proxy"} · '
+    f'Catholic Index: {"real data" if "catholic index" not in PROXY_TICKERS else "zero-return proxy"}</p>',
     unsafe_allow_html=True,
 )

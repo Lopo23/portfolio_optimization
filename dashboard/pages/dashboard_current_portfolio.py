@@ -154,7 +154,7 @@ asset_colors = {name: COLORS[i % len(COLORS)] for i, name in enumerate(prices_da
 # HILFSFUNKTIONEN
 # ─────────────────────────────────────────────
 def compute_metrics(returns: pd.DataFrame, weights: pd.Series, freq: str) -> pd.DataFrame:
-    """Berechnet Kennzahlen für gegebene Renditefrequenz."""
+    """Compute performance metrics for the given return frequency."""
     scale = 252 if freq == "daily" else 12
 
     rows = []
@@ -250,20 +250,20 @@ def compute_lambda(returns: pd.DataFrame, weights: pd.Series, freq: str, rf: flo
         "Asset":    cols,
         "E(r)":     [f"{x:.2%}" for x in er],
         "E(r)-r_f": [f"{x:.2%}" for x in excess],
-        "Gewicht":  [f"{v:.2%}" for v in w],
+        "Weight":   [f"{v:.2%}" for v in w],
     })
 
     return {"lambda": lam, "asset_df": asset_df, "sens_df": pd.DataFrame(sens)}
 
 
-def interp_lambda(lam: float) -> tuple[str, str]:
-    if np.isnan(lam):  return "Nicht berechenbar", "#EF4444"
-    if lam < 0:        return "Negativ – impliziert irrationales Verhalten", "#EF4444"
-    if lam < 1:        return "Sehr geringe Risikoaversion (nahezu risikoneutral)", "#F59E0B"
-    if lam < 3:        return "Geringe bis moderate Risikoaversion", "#84CC16"
-    if lam < 6:        return "Moderate Risikoaversion – typisch für institutionelle Anleger", "#10B981"
-    if lam < 10:       return "Hohe Risikoaversion", "#F59E0B"
-    return                    "Sehr hohe Risikoaversion", "#EF4444"
+def interp_lambda(lam):  # (float) -> Tuple[str, str]
+    if np.isnan(lam):  return "Not computable", "#EF4444"
+    if lam < 0:        return "Negative – implies irrational behavior", "#EF4444"
+    if lam < 1:        return "Very low risk aversion (near risk-neutral)", "#F59E0B"
+    if lam < 3:        return "Low to moderate risk aversion", "#84CC16"
+    if lam < 6:        return "Moderate risk aversion (institutional)", "#10B981"
+    if lam < 10:       return "High risk aversion", "#F59E0B"
+    return                    "Very high risk aversion", "#EF4444"
 
 
 # ─────────────────────────────────────────────
@@ -275,9 +275,9 @@ with h_left:
     st.markdown(f"""
     <div style="padding: 1.4rem 0 0.2rem 0;">
         <p class="section-label">Portfolio Intelligence</p>
-        <h1 style="margin:0; font-size:2.1rem;">Old Portfolio — Analyse</h1>
+        <h1 style="margin:0; font-size:2.1rem;">Current Portfolio — Analysis</h1>
         <p style="color:#4A6080; font-size:0.82rem; margin-top:0.3rem;">
-            ab {start_date} &nbsp;·&nbsp; {len(prices_daily.columns)} Assets &nbsp;·&nbsp;
+            since {start_date} &nbsp;·&nbsp; {len(prices_daily.columns)} Assets &nbsp;·&nbsp;
             {prices_daily.index[0].strftime("%d.%m.%Y")} – {prices_daily.index[-1].strftime("%d.%m.%Y")}
         </p>
     </div>
@@ -285,19 +285,57 @@ with h_left:
 
 with h_right:
     st.markdown("<div style='padding-top:1.8rem;'>", unsafe_allow_html=True)
-    use_monthly = st.toggle("📅  Monatsrenditen", value=True,
-                            help="Ein = Monatsrenditen (×12) · Aus = Tagesrenditen (×252)")
+    use_monthly = st.toggle("📅  Monthly Returns", value=True,
+                            help="On = monthly returns (×12) · Off = daily returns (×252)")
     st.markdown("</div>", unsafe_allow_html=True)
 
+
+# ── German Bund YTM override ────────────────────────────────────────────
+_BUND_TICKER = "BO221256 Corp"
+_BUND_YTM_PA = 0.03074
+
+def _override_bund(ret):
+    """Shift Bund return series so that the GEOMETRIC annualised return
+    equals the YTM (3.074 % p.a.) while preserving historical volatility.
+
+    Uses scipy.optimize.brentq to find the exact additive shift s such that:
+        geo_annualised(r_hist + s) = 3.074 %
+    Volatility, correlations and distribution shape are fully preserved.
+    """
+    if _BUND_TICKER not in ret.columns:
+        return ret
+    from scipy.optimize import brentq
+    ret  = ret.copy()
+    r    = ret[_BUND_TICKER].dropna()
+    n    = len(r)
+    if n < 2:
+        return ret
+
+    def _geo_ann(series):
+        total = (1 + series).prod() - 1
+        return (1 + total) ** (12 / n) - 1
+
+    def _objective(s):
+        return _geo_ann(r + s) - _BUND_YTM_PA
+
+    try:
+        s_opt = brentq(_objective, -0.20, 0.20, xtol=1e-10)
+    except ValueError:
+        # fallback: arithmetic mean-shift if brentq bracket fails
+        s_opt = _BUND_YTM_PA / 12 - r.mean()
+
+    ret[_BUND_TICKER] = ret[_BUND_TICKER] + s_opt
+    return ret
+
 if use_monthly:
-    returns  = prices_monthly.pct_change().dropna()
+    returns  = _override_bund(prices_monthly.pct_change().dropna())
     freq     = "monthly"
-    freq_lbl = "Monatsrenditen"
+    freq_lbl = "monthly returns"
     scale    = 12
 else:
-    returns  = prices_daily.pct_change().dropna()
+    returns  = _override_bund(prices_daily.pct_change().dropna())
     freq     = "daily"
-    freq_lbl = "Tagesrenditen"
+    freq_lbl = "daily returns"
     scale    = 252
 
 metrics_df = compute_metrics(returns, weights, freq)
@@ -309,20 +347,33 @@ port_returns = returns[w_norm.index].mul(w_norm, axis=1).sum(axis=1)
 port_cum     = (1 + port_returns).cumprod()
 port_dd      = (port_cum - port_cum.cummax()) / port_cum.cummax()
 
-st.caption(f"KPIs berechnet auf Basis von **{freq_lbl}** · r_f = {RF:.0%} · Annualisierung ×{scale}")
+st.caption(f"KPIs based on **{freq_lbl}** · r_f = {RF:.0%} · annualisation ×{scale}")
 st.markdown("---")
 
 # ─────────────────────────────────────────────
 # KPI ZEILE
 # ─────────────────────────────────────────────
-k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
-k1.metric("Portfoliowert (Mio. €)",  f"{total_value/1e6:.2f}")
-k2.metric("Ann. Rendite (%)",        f"{port_m['ann_return']:.2f}")
-k3.metric("Ann. Volatilität (%)",    f"{port_m['ann_vol']:.2f}")
-k4.metric("Sharpe Ratio",            f"{port_m['sharpe']:.3f}")
-k5.metric("Sortino Ratio",           f"{port_m['sortino']:.3f}")
-k6.metric("Max Drawdown (%)",        f"{port_m['max_drawdown']:.2f}")
-k7.metric("CVaR 95 % (mtl.)",        f"{port_m['cvar_95']:.2f}")
+# Row 1: value metrics
+r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+r1c1.metric("Portfolio Value (€ Mio.)",    f"{total_value/1e6:.2f}")
+r1c2.metric("Ann. Return (%)",              f"{port_m['ann_return']:.2f}")
+r1c3.metric("Ann. Volatility (%)",          f"{port_m['ann_vol']:.2f}")
+r1c4.metric("Sharpe Ratio",                 f"{port_m['sharpe']:.3f}")
+
+st.markdown("<div style='margin-top:.6rem;'>", unsafe_allow_html=True)
+
+# Row 2: risk metrics
+r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+r2c1.metric("Sortino Ratio",                f"{port_m['sortino']:.3f}")
+r2c2.metric("Max Drawdown (%)",             f"{port_m['max_drawdown']:.2f}")
+r2c3.metric(
+    "CVaR 95% (%, per period)",
+    f"{port_m['cvar_95']:.2f}",
+    help="Expected loss in the worst 5% of months. Expressed as % return per period."
+)
+r2c4.metric("Total Return (%)",             f"{port_m['total_return']:.2f}")
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -348,7 +399,7 @@ with c1:
         line=dict(color="white", width=2.4, dash="dot"),
         hovertemplate="%{y:.3f}<extra>Portfolio</extra>",
     ))
-    layout(fig, "Kumulierte Renditen (Basis = 1)", height=360)
+    layout(fig, "Cumulative Returns (base = 1)", height=360)
     st.plotly_chart(fig, use_container_width=True)
 
 with c2:
@@ -375,7 +426,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 # KENNZAHLEN + KORRELATION
 # ─────────────────────────────────────────────
-st.markdown('<p class="section-label">Risiko & Korrelation</p>', unsafe_allow_html=True)
+st.markdown('<p class="section-label">Risk & Correlation</p>', unsafe_allow_html=True)
 
 c1, c2 = st.columns([1.1, 1])
 
@@ -383,16 +434,16 @@ with c1:
     disp = (metrics_df.reset_index()
             .rename(columns={
                 "asset": "Ticker", "name": "Name",
-                "ann_return": "Rendite %", "ann_vol": "Vola %",
+                "ann_return": "Return %", "ann_vol": "Vola %",
                 "sharpe": "Sharpe", "sortino": "Sortino",
                 "max_drawdown": "Max DD %", "cvar_95": "CVaR 95%",
                 "total_return": "Total %",
             }))
     mask  = disp["Ticker"] == "PORTFOLIO"
     disp  = pd.concat([disp[~mask], disp[mask]], ignore_index=True)
-    st.markdown(f"**Kennzahlen je Asset** *(Basis: {freq_lbl})*")
+    st.markdown(f"**Key Metrics per Asset** *(basis: {freq_lbl})*")
     st.dataframe(
-        disp[["Name", "Rendite %", "Vola %", "Sharpe", "Sortino", "Max DD %", "CVaR 95%"]],
+        disp[["Name", "Return %", "Vola %", "Sharpe", "Sortino", "Max DD %", "CVaR 95%"]],
         use_container_width=True, hide_index=True, height=340,
     )
 
@@ -406,7 +457,7 @@ with c2:
         textfont=dict(size=9),
         hovertemplate="%{x} / %{y}<br>ρ = %{z:.2f}<extra></extra>",
     ))
-    layout(fig, f"Korrelationsmatrix ({freq_lbl})", height=380)
+    layout(fig, f"Correlation Matrix ({freq_lbl})", height=380)
     st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
@@ -414,7 +465,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 # LAMBDA
 # ─────────────────────────────────────────────
-st.markdown('<p class="section-label">Risikoaversion</p>', unsafe_allow_html=True)
+st.markdown('<p class="section-label">Risk Aversion</p>', unsafe_allow_html=True)
 
 lam_data  = compute_lambda(returns, weights, freq, RF)
 lam       = lam_data["lambda"]
@@ -427,23 +478,23 @@ with c1:
     st.markdown(f"""
     <div class="lambda-box">
         <p style="font-size:0.7rem; letter-spacing:0.1em; color:#3D6090; text-transform:uppercase; margin:0;">
-            Risikoaversionskoeffizient
+            Risk Aversion Coefficient
         </p>
         <div class="lambda-value" style="color:{lam_color};">{lam_str}</div>
         <p class="lambda-interp">{interp}</p>
         <hr style="border-color:#1E3A5F; margin:0.8rem 0;">
         <p style="font-size:0.72rem; color:#4A6080; margin:0;">
             λ = 1 / (w<sup>T</sup> Σ<sup>-1</sup> (E(r) − r<sub>f</sub>))
-            <br>r<sub>f</sub> = {RF:.0%} &nbsp;·&nbsp; Basis: {freq_lbl}
+            <br>r<sub>f</sub> = {RF:.0%} &nbsp;·&nbsp; basis: {freq_lbl}
         </p>
         <p style="font-size:0.72rem; color:#4A6080; margin-top:0.4rem;">
-            Richtwerte: λ 2–4 aggressiv · λ 4–8 konservativ
+            Benchmarks: λ 2–4 aggressive · λ 4–8 conservative
         </p>
     </div>
     """, unsafe_allow_html=True)
 
 with c2:
-    st.markdown(f"**Erwartete Renditen & Excess Returns** *(annualisiert)*")
+    st.markdown(f"**Expected Returns & Excess Returns** *(annualised)*")
     st.dataframe(lam_data["asset_df"], use_container_width=True, hide_index=True, height=300)
 
 with c3:
@@ -457,8 +508,8 @@ with c3:
         textfont=dict(color="#8A9BB0", size=10),
         hovertemplate="r_f = %{x}<br>λ = %{y:.4f}<extra></extra>",
     ))
-    layout(fig, "Sensitivität λ nach r_f", height=300)
-    fig.update_layout(xaxis_title="Risikofreier Zinssatz r_f", yaxis_title="λ", showlegend=False)
+    layout(fig, "Sensitivity of λ to r_f", height=300)
+    fig.update_layout(xaxis_title="Risk-free rate r_f", yaxis_title="λ", showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
@@ -466,7 +517,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 # ALLOKATION
 # ─────────────────────────────────────────────
-st.markdown('<p class="section-label">Allokation</p>', unsafe_allow_html=True)
+st.markdown('<p class="section-label">Allocation</p>', unsafe_allow_html=True)
 
 c1, c2, c3 = st.columns(3)
 
@@ -482,18 +533,18 @@ def donut(labels, values, colors, title):
 with c1:
     labels = [summary_df.loc[t, "name"] for t in weights.index]
     st.plotly_chart(donut(labels, weights.values, COLORS[:len(weights)],
-                          "Portfoliogewichte"), use_container_width=True)
+                          "Portfolio Weights"), use_container_width=True)
 
 with c2:
     cls = summary_df.groupby("class")["eur"].sum().reset_index()
     st.plotly_chart(donut(cls["class"].tolist(), cls["eur"].tolist(),
-                          ["#3B82F6", "#10B981", "#F59E0B"], "Asset-Klassen"),
+                          ["#3B82F6", "#10B981", "#F59E0B"], "Asset Classes"),
                     use_container_width=True)
 
 with c3:
     reg = summary_df.groupby("region")["eur"].sum().reset_index()
     st.plotly_chart(donut(reg["region"].tolist(), reg["eur"].tolist(),
-                          ["#EF4444", "#8B5CF6", "#06B6D4", "#F97316"], "Regionen"),
+                          ["#EF4444", "#8B5CF6", "#06B6D4", "#F97316"], "Regions"),
                     use_container_width=True)
 
 st.markdown("---")
@@ -501,7 +552,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 # SEKTOREN + KONZENTRATION
 # ─────────────────────────────────────────────
-st.markdown('<p class="section-label">Sektoren & Konzentration</p>', unsafe_allow_html=True)
+st.markdown('<p class="section-label">Sectors & Concentration</p>', unsafe_allow_html=True)
 
 c1, c2 = st.columns(2)
 
@@ -518,8 +569,8 @@ with c1:
         textposition="outside", textfont=dict(color="#8A9BB0", size=10),
         hovertemplate="%{y}<br>%{x:.1f}%<extra></extra>",
     ))
-    layout(fig, "Sektorallokation", height=300)
-    fig.update_layout(xaxis_title="Gewicht (%)", yaxis_title="")
+    layout(fig, "Sector Allocation", height=300)
+    fig.update_layout(xaxis_title="Weight (%)", yaxis_title="")
     st.plotly_chart(fig, use_container_width=True)
 
 with c2:
@@ -538,37 +589,171 @@ with c2:
         if warn and val > warn:
             st.caption(f"⚠️ {msg}")
 
-    st.markdown("**Konzentrationsübersicht**")
-    kpi_row("Top-3 Konzentration",   conc["pct"].nlargest(3).sum(), 50, "Hohe Konzentration")
-    kpi_row("Deutschland-Exposure",  conc[conc["region"]=="Germany"]["pct"].sum(), 50, "Starker Home Bias")
-    kpi_row("Automotive-Sektor",     conc[conc["sector"]=="Automotive"]["pct"].sum(), 30, "Erhöhtes Sektorrisiko")
-    kpi_row("Equity-Anteil",         conc[conc["class"]=="Equity"]["pct"].sum())
-    kpi_row("Fixed Income-Anteil",   conc[conc["class"]=="Fixed Income"]["pct"].sum())
+    st.markdown("**Concentration Overview**")
+    kpi_row("Top-3 Concentration",   conc["pct"].nlargest(3).sum(), 50, "High concentration")
+    kpi_row("Germany Exposure",  conc[conc["region"]=="Germany"]["pct"].sum(), 50, "Strong home bias")
+    kpi_row("Automotive Sector",     conc[conc["sector"]=="Automotive"]["pct"].sum(), 30, "Elevated sector risk")
+    kpi_row("Equity Share",         conc[conc["class"]=="Equity"]["pct"].sum())
+    kpi_row("Fixed Income Share",   conc[conc["class"]=="Fixed Income"]["pct"].sum())
+
+st.markdown("---")
+
+# ─────────────────────────────────────────────
+# ESG ANALYSE
+# ─────────────────────────────────────────────
+st.markdown('<p class="section-label">ESG Analyse</p>', unsafe_allow_html=True)
+
+# ESG scores for old portfolio assets (LSEG/Refinitiv legacy ÷ 10, higher = better)
+# DAX UCITS ETF  → proxy DAXEX GY Equity  (identical DAX index, same ETF family)
+# S&P500 GY Equity → proxy CSPX LN Equity (identical S&P 500 index)
+# BO221256 Corp  → German Bund, no issuer-level score available
+ESG_OLD = {
+    "BMW GY Equity":    5.83,
+    "MBG GY Equity":    6.24,
+    "DAX UCITS ETF":    7.80,   # proxy: DAXEX GY Equity
+    "IWDA LN Equity":   7.113,
+    "HIGH LN Equity":   7.30,
+    "IBCI IM Equity":   7.50,
+    "S&P500 GY Equity": 7.041,  # proxy: CSPX LN Equity
+    "BO221256 Corp":    None,
+}
+
+ESG_LABEL_COLORS = {
+    "AAA": "#10B981", "AA": "#84CC16", "A": "#F59E0B",
+    "BBB": "#FB923C", "BB": "#EF4444", "B": "#DC2626",
+    "CCC": "#7F1D1D", "n/a": "#374151",
+}
+
+def _esg_label(s):
+    if s is None: return "n/a"
+    if s >= 7.5:  return "AAA"
+    if s >= 6.5:  return "AA"
+    if s >= 5.5:  return "A"
+    if s >= 4.5:  return "BBB"
+    if s >= 3.5:  return "BB"
+    if s >= 2.5:  return "B"
+    return "CCC"
+
+# Weighted average (scored assets only)
+esg_pairs = [(s, weights.get(t, 0.)) for t, s in ESG_OLD.items() if s is not None]
+esg_tw    = sum(w for _, w in esg_pairs)
+esg_avg   = sum(s * w for s, w in esg_pairs) / esg_tw if esg_tw > 0 else None
+
+# ── Score card + bar chart ──────────────────
+ev_c1, ev_c2 = st.columns([1, 2])
+
+with ev_c1:
+    if esg_avg:
+        lbl   = _esg_label(esg_avg)
+        color = ESG_LABEL_COLORS.get(lbl, "#64748B")
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#0F1622 0%,#111827 100%);
+             border:1px solid #1E2A3A;border-radius:14px;padding:1.8rem 2rem;
+             text-align:center;">
+          <div style="font-size:.62rem;letter-spacing:.12em;text-transform:uppercase;
+                      color:#3D6090;margin-bottom:.6rem;">
+            Weighted Avg ESG Score
+          </div>
+          <div style="font-size:3.2rem;font-weight:700;color:{color};line-height:1;">
+            {esg_avg:.2f}
+          </div>
+          <div style="font-size:1rem;font-weight:600;color:{color};margin:.3rem 0;">
+            {lbl}
+          </div>
+          <hr style="border-color:#1E3A5F;margin:.8rem 0;">
+          <div style="font-size:.7rem;color:#4A6080;line-height:1.6;">
+            LSEG/Refinitiv · higher = better<br>
+            {esg_tw*100:.0f}% of portfolio scored<br>
+            <em>German Bund excluded</em>
+          </div>
+        </div>""", unsafe_allow_html=True)
+
+with ev_c2:
+    tickers_sorted = sorted(
+        [t for t in ESG_OLD],
+        key=lambda t: ESG_OLD[t] if ESG_OLD[t] is not None else -1
+    )
+    scores  = [ESG_OLD[t] if ESG_OLD[t] is not None else 0 for t in tickers_sorted]
+    bcolors = [ESG_LABEL_COLORS.get(_esg_label(ESG_OLD[t]), "#1E2A3A")
+               for t in tickers_sorted]
+    w_pct   = [weights.get(t, 0.) * 100 for t in tickers_sorted]
+    texts   = [f"{ESG_OLD[t]:.2f} ({_esg_label(ESG_OLD[t])})  w={w:.1f}%"
+               if ESG_OLD[t] is not None else "n/a"
+               for t, w in zip(tickers_sorted, w_pct)]
+
+    fig = go.Figure(go.Bar(
+        y=[t.replace(" Equity","").replace(" Corp","") for t in tickers_sorted],
+        x=scores, orientation="h",
+        marker=dict(color=bcolors, line=dict(color="#080C14", width=0.5)),
+        text=texts, textposition="outside",
+        textfont=dict(size=9, color="#8A9BB0"),
+        hovertemplate="%{y}<br>ESG: %{x:.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        **PLOTLY_BASE,
+        title=dict(text="ESG Score per Asset  (higher = better)",
+                   font=dict(family="DM Serif Display", size=13, color="#C8D0DC")),
+        height=max(280, len(tickers_sorted) * 38),
+        xaxis=dict(gridcolor="#141E2D", linecolor="#1A2332", zeroline=False,
+                   range=[0, 9.8], title="ESG Score"),
+        yaxis=dict(gridcolor="#141E2D", linecolor="#1A2332"),
+        showlegend=False,
+    )
+    for xv, lt, lc in [(4.5,"BBB","#FB923C"),(5.5,"A","#F59E0B"),
+                        (6.5,"AA","#84CC16"),(7.5,"AAA","#10B981")]:
+        fig.add_vline(x=xv, line=dict(color=lc, width=1, dash="dash"),
+                      annotation_text=lt, annotation_position="top",
+                      annotation_font=dict(color=lc, size=9))
+    if esg_avg:
+        fig.add_vline(x=esg_avg,
+                      line=dict(color="#3B82F6", width=1.5, dash="dot"),
+                      annotation_text=f"Avg {esg_avg:.2f}",
+                      annotation_position="bottom right",
+                      annotation_font=dict(color="#3B82F6", size=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+# ── Detail table ───────────────────────────
+st.markdown("**ESG Detail**")
+esg_tbl = []
+for t in sorted(ESG_OLD, key=lambda x: ESG_OLD[x] if ESG_OLD[x] else -1, reverse=True):
+    s = ESG_OLD[t]
+    esg_tbl.append({
+        "Ticker":     t,
+        "Name":       ASSET_META.get(t, {}).get("name", t),
+        "Weight":     f"{weights.get(t, 0.)*100:.1f}%",
+        "ESG Score":  f"{s:.2f}" if s is not None else "n/a",
+        "Label":      _esg_label(s),
+        "Note":       ("Proxy: DAXEX GY Equity"  if t == "DAX UCITS ETF" else
+                       "Proxy: CSPX LN Equity"   if t == "S&P500 GY Equity" else
+                       "No issuer-level score"    if s is None else ""),
+    })
+st.dataframe(pd.DataFrame(esg_tbl), use_container_width=True,
+             hide_index=True, height=310)
 
 st.markdown("---")
 
 # ─────────────────────────────────────────────
 # DETAIL-TABELLE
 # ─────────────────────────────────────────────
-st.markdown('<p class="section-label">Positionen im Detail</p>', unsafe_allow_html=True)
+st.markdown('<p class="section-label">Positions in Detail</p>', unsafe_allow_html=True)
 
 detail = summary_df.copy().reset_index()
-detail["Marktwert"] = detail["eur"].map(lambda x: f"€ {x:,.0f}")
-detail["Gewicht"]   = detail["weight"].map(lambda x: f"{x*100:.2f}%")
+detail["Market Value (€)"] = detail["eur"].map(lambda x: f"€ {x:,.0f}")
+detail["Weight"]   = detail["weight"].map(lambda x: f"{x*100:.2f}%")
 detail = detail.rename(columns={
     "ticker": "Ticker", "name": "Name",
-    "class": "Klasse", "region": "Region", "sector": "Sektor",
+    "class": "Class", "region": "Region", "sector": "Sector",
 })
 st.dataframe(
-    detail[["Ticker", "Name", "Klasse", "Region", "Sektor", "Marktwert", "Gewicht"]],
+    detail[["Ticker", "Name", "Class", "Region", "Sector", "Market Value (€)", "Weight"]],
     use_container_width=True, hide_index=True,
 )
 
 st.markdown("---")
 st.markdown(
     f'<p style="color:#2A3A50;font-size:0.72rem;text-align:center;">'
-    f'Datenquelle: Bloomberg Excel Export &nbsp;·&nbsp; '
+    f'Data source: Bloomberg Excel Export &nbsp;·&nbsp; '
     f'Zeitraum: {start_date} – {prices_daily.index[-1].strftime("%d.%m.%Y")} &nbsp;·&nbsp; '
-    f'KPI-Basis: {freq_lbl} &nbsp;·&nbsp; Alle Angaben in EUR</p>',
+    f'KPI basis: {freq_lbl} &nbsp;·&nbsp; All figures in EUR</p>',
     unsafe_allow_html=True,
 )
